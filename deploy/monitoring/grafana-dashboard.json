@@ -1,0 +1,117 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "Poker Engine Overview",
+    "tags": ["poker-engine", "production"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "WebSocket 连接数",
+        "type": "graph",
+        "targets": [
+          {"expr": "poker_ws_connections", "legendFormat": "连接数"}
+        ],
+        "yaxes": [{"label": "连接数"}, {"label": ""}]
+      },
+      {
+        "id": 2,
+        "title": "消息吞吐量",
+        "type": "graph",
+        "targets": [
+          {"expr": "rate(poker_messages_processed_total[1m])", "legendFormat": "消息/秒"}
+        ],
+        "yaxes": [{"label": "msg/s"}, {"label": ""}]
+      },
+      {
+        "id": 3,
+        "title": "消息延迟 (p50/p95/p99)",
+        "type": "graph",
+        "targets": [
+          {"expr": "histogram_quantile(0.50, poker_message_latency_seconds_bucket)", "legendFormat": "p50"},
+          {"expr": "histogram_quantile(0.95, poker_message_latency_seconds_bucket)", "legendFormat": "p95"},
+          {"expr": "histogram_quantile(0.99, poker_message_latency_seconds_bucket)", "legendFormat": "p99"}
+        ],
+        "yaxes": [{"label": "秒"}, {"label": ""}]
+      },
+      {
+        "id": 4,
+        "title": "活跃牌桌数量",
+        "type": "singlestat",
+        "targets": [{"expr": "poker_active_tables"}],
+        "format": "none"
+      },
+      {
+        "id": 5,
+        "title": "在线玩家数",
+        "type": "singlestat",
+        "targets": [{"expr": "poker_online_players"}],
+        "format": "none"
+      },
+      {
+        "id": 6,
+        "title": "反作弊告警统计",
+        "type": "table",
+        "targets": [
+          {"expr": "poker_anticheat_alerts_total by (level)", "legendFormat": "{{level}}"}
+        ],
+        "columns": ["level", "value"]
+      },
+      {
+        "id": 7,
+        "title": "内存使用",
+        "type": "graph",
+        "targets": [
+          {"expr": "poker_server_memory_bytes / 1024 / 1024", "legendFormat": "RSS (MB)"}
+        ],
+        "yaxes": [{"label": "MB"}, {"label": ""}]
+      },
+      {
+        "id": 8,
+        "title": "CPU 使用率",
+        "type": "graph",
+        "targets": [
+          {"expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)", "legendFormat": "CPU%"}
+        ],
+        "yaxes": [{"label": "%"}, {"label": ""}]
+      },
+      {
+        "id": 9,
+        "title": "数据库查询延迟",
+        "type": "graph",
+        "targets": [
+          {"expr": "histogram_quantile(0.99, poker_db_query_duration_seconds_bucket)", "legendFormat": "p99"},
+          {"expr": "histogram_quantile(0.50, poker_db_query_duration_seconds_bucket)", "legendFormat": "p50"}
+        ],
+        "yaxes": [{"label": "秒"}, {"label": ""}]
+      },
+      {
+        "id": 10,
+        "title": "锦标赛统计",
+        "type": "row",
+        "panels": [
+          {
+            "id": 11,
+            "title": "进行中锦标赛",
+            "type": "singlestat",
+            "targets": [{"expr": "poker_active_tournaments"}]
+          },
+          {
+            "id": 12,
+            "title": "已完成锦标赛",
+            "type": "singlestat",
+            "targets": [{"expr": "poker_completed_tournaments"}]
+          },
+          {
+            "id": 13,
+            "title": "参赛玩家",
+            "type": "singlestat",
+            "targets": [{"expr": "poker_tournament_players"}]
+          }
+        ]
+      }
+    ],
+    "schemaVersion": 16,
+    "version": 1
+  }
+}

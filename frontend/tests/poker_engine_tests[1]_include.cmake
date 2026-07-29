@@ -1,0 +1,5 @@
+if(EXISTS "/home/jamesoldman/my-project/projects/poker-engine/frontend/tests/poker_engine_tests[1]_tests.cmake")
+  include("/home/jamesoldman/my-project/projects/poker-engine/frontend/tests/poker_engine_tests[1]_tests.cmake")
+else()
+  add_test(poker_engine_tests_NOT_BUILT poker_engine_tests_NOT_BUILT)
+endif()

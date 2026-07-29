@@ -1,0 +1,134 @@
+# =============================================================================
+# Kubernetes RBAC 配置
+# =============================================================================
+
+# Service Account for poker server
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: poker-server
+  namespace: poker-engine
+---
+# Role: 最小权限原则 — 服务器只能访问其命名空间内的资源
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: poker-server-role
+  namespace: poker-engine
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "watch"]  # 只读！不能 list (防泄露)
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]  # 只读监控
+- apiGroups: ["extensions", "networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "watch"]
+---
+# ClusterRole: 监控指标读取
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metrics-reader
+rules:
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+---
+# RoleBinding: 将角色绑定到 ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: poker-server-binding
+  namespace: poker-engine
+subjects:
+- kind: ServiceAccount
+  name: poker-server
+  namespace: poker-engine
+roleRef:
+  kind: Role
+  name: poker-server-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# ClusterRoleBinding: 绑定指标读取
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: metrics-reader-binding
+subjects:
+- kind: ServiceAccount
+  name: poker-server
+  namespace: poker-engine
+roleRef:
+  kind: ClusterRole
+  name: metrics-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# NetworkPolicy: 细粒度网络隔离
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: poker-server-strict
+  namespace: poker-engine
+spec:
+  podSelector:
+    matchLabels:
+      app: poker-server
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # 仅允许 Ingress Controller 访问
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 9001   # WebSocket
+    - protocol: TCP
+      port: 9000   # HTTP API
+    - protocol: TCP
+      port: 9002   # Spectator
+    - protocol: TCP
+      port: 9090   # Metrics (Prometheus)
+  egress:
+  # Postgres (同命名空间)
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgresql
+    ports:
+    - protocol: TCP
+      port: 5432
+  # Redis (同命名空间)
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Vault (如果是集群内部署)
+  - to:
+    - podSelector:
+        matchLabels:
+          app: vault
+    ports:
+    - protocol: TCP
+      port: 8200
+  # 外部 DNS 解析
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: UDP
+      port: 53
+  # 外部 API (Nginx 或其他)
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: TCP
+      port: 443

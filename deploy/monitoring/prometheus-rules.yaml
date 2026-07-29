@@ -1,0 +1,137 @@
+# =============================================================================
+# Prometheus Alerting Rules for Poker Engine
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: poker-engine-alerts
+  namespace: monitoring
+  labels:
+    app: poker-engine
+    role: alert-rules
+spec:
+  groups:
+  - name: poker_engine_general
+    interval: 30s
+    rules:
+    - alert: PokerServerDown
+      expr: up{job="poker-engine"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "扑克服务器已宕机"
+        description: "服务器已失联超过 1 分钟"
+
+    - alert: TooManyWebSocketConnections
+      expr: poker_ws_connections > 10000
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "WebSocket 连接数过多 ({{ $value }})"
+        description: "连接数超过 10000"
+
+    - alert: HighMemoryUsage
+      expr: poker_server_memory_bytes / poker_server_memory_limit > 0.85
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "内存使用率过高 ({{ $value | humanizePercentage }})"
+
+    - alert: CriticalMemoryUsage
+      expr: poker_server_memory_bytes / poker_server_memory_limit > 0.95
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "内存使用率严重过高 ({{ $value | humanizePercentage }})"
+
+    - alert: CPUSaturation
+      expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "CPU 饱和度 >85%"
+
+  - name: poker_engine_game
+    rules:
+    - alert: HighErrorRate
+      expr: rate(poker_server_errors_total[5m]) / rate(poker_server_requests_total[5m]) > 0.05
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "错误率过高 ({{ $value | humanizePercentage }})"
+
+    - alert: HighHeartbeatFailureRate
+      expr: rate(poker_heartbeat_failures_total[1m]) > 10
+      for: 1m
+      labels:
+        severity: warning
+      annotations:
+        summary: "心跳失败率异常高 ({{ $value }} /s)"
+
+    - alert: MessageQueueBacklog
+      expr: poker_message_queue_depth > 10000
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "消息队列积压严重 ({{ $value }} 条)"
+
+  - name: poker_engine_anticheat
+    rules:
+    - alert: HighSuspicionAlerts
+      expr: poker_anticheat_alerts_total{level="confirmed"} > 5
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: "短时间内大量确认级别的反作弊告警"
+        description: "可能存在大规模作弊行为，请立即检查"
+
+    - alert: MLModelStale
+      expr: time() - poker_ml_model_last_trained_timestamp_seconds > 86400 * 7
+      for: 1h
+      labels:
+        severity: warning
+      annotations:
+        summary: "ML 模型未更新超过 7 天"
+
+    - alert: BotDetectionSpike
+      expr: rate(poker_anticheat_bot_detections_total[1h]) > 5
+      for: 30m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Bot 检测频率异常升高 ({{ $value }} /h)"
+
+  - name: poker_engine_database
+    rules:
+    - alert: HighDatabaseLatency
+      expr: poker_db_query_duration_seconds{quantile="0.99"} > 0.5
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "数据库 99分位延迟过高"
+        description: "99分位查询延迟: {{ $value }}s"
+
+    - alert: DatabaseConnectionsHigh
+      expr: poker_db_connections_active / poker_db_connections_max > 0.8
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "数据库连接池使用率 >80%"
+
+    - alert: DatabaseReplicationLag
+      expr: poker_db_replication_lag_seconds > 5
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "数据库复制延迟过高"

@@ -1,0 +1,29 @@
+# Minimal phevaluator build for poker-engine (5/6/7-card Hold'em only)
+cmake_minimum_required(VERSION 3.16)
+
+set(CMAKE_C_STANDARD 99)
+
+add_library(pheval STATIC
+  src/dptables.c
+  src/tables_bitwise.c
+  src/evaluator5.c
+  src/evaluator5.cc
+  src/evaluator6.c
+  src/evaluator6.cc
+  src/evaluator7.c
+  src/evaluator7.cc
+  src/hashtable5.c
+  src/hashtable6.c
+  src/hashtable7.c
+  src/hashtable.c
+  src/hash.c
+  src/rank.c
+  src/7462.c
+)
+
+target_include_directories(pheval PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+target_compile_options(pheval PRIVATE -O3 -w)

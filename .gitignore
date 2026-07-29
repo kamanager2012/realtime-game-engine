@@ -1,0 +1,57 @@
+# Build
+build/
+cmake-build-*/
+*.o
+*.obj
+*.so
+*.dylib
+
+# Vendored prebuilt GTest static libs (Linux x86-64) are tracked intentionally —
+# tests link against them. They are re-included explicitly below.
+!third_party/googletest/lib/libgtest.a
+!third_party/googletest/lib/libgtest_main.a
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Dependencies
+node_modules/
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Omitted large generated lookup tables (Omaha / PLO only; opt-in via
+# scripts/gen_omaha_tables.sh). Texas Hold'em needs none of these.
+third_party/PokerHandEvaluator/src/tables_plo*.c
+third_party/PokerHandEvaluator/src/tables_plo*.tar.gz
+
+# Legacy / stale code
+legacy/
+
+# Frontend build output
+frontend/dist/
+
+# Project tooling notes
+PROGRESS.md
+CLAUDE.md
+
+# Environment
+.env
+.env.*
+
+# Generated
+*.pyc
+__pycache__/
+
+# IDE configs
+.claude/
+.ctx/
+.codebuddy/

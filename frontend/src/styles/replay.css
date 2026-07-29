@@ -1,0 +1,20 @@
+.replay-viewer { position: relative; background: #0d1117; border-radius: 12px; overflow: hidden; min-height: 700px; }
+.replay-header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: linear-gradient(135deg, #161b22, #0d1117); border-bottom: 1px solid rgba(255,255,255,0.1); }
+.replay-header h2 { font-size: 18px; color: #f0f6fc; }
+.replay-phase { margin-left: auto; padding: 4px 12px; background: rgba(88,166,255,0.15); border-radius: 20px; color: #58a6ff; font-size: 13px; font-weight: 600; }
+.btn-back { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #c9d1d9; padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+.btn-back:hover { background: rgba(255,255,255,0.1); }
+.replay-controls { padding: 12px 20px; }
+.control-buttons { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.ctrl-btn { width: 36px; height: 36px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.05); color: #c9d1d9; font-size: 16px; cursor: pointer; }
+.ctrl-btn:hover { background: rgba(88,166,255,0.2); border-color: #58a6ff; }
+.ctrl-btn.active { background: rgba(88,166,255,0.3); border-color: #58a6ff; color: #fff; }
+.event-timeline { border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px; }
+.event-timeline h4 { color: #8b949e; font-size: 13px; margin-bottom: 8px; }
+.event-list { max-height: 200px; overflow-y: auto; }
+.event-item { display: flex; align-items: center; gap: 10px; padding: 4px 8px; font-size: 12px; font-family: 'SF Mono','Fira Code',monospace; border-radius: 4px; }
+.event-item:hover { background: rgba(255,255,255,0.03); }
+.event-item.current { background: rgba(88,166,255,0.1); color: #58a6ff; }
+.event-time { color: #484f58; min-width: 40px; }
+.event-type { color: #f0883e; min-width: 70px; font-weight: 600; }
+.event-detail { color: #c9d1d9; }

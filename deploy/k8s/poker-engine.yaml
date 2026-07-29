@@ -1,0 +1,349 @@
+# =============================================================================
+# 德州扑克引擎 — Kubernetes 部署配置
+# =============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: poker-engine
+  labels:
+    app: poker-engine
+---
+
+# ==================== ConfigMap ====================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: poker-config
+  namespace: poker-engine
+data:
+  DB_PATH: "/data/poker_engine.db"
+  WS_PORT: "9001"
+  HTTP_PORT: "9000"
+  SPEC_PORT: "9002"
+  LOG_LEVEL: "info"
+  MAX_TABLES: "100"
+  AI_STRATEGY: "cfr"
+  CFR_MODEL_PATH: "/models/cfr_model.cfr"
+  ML_MODEL_PATH: "/models/ml_cheat_model.bin"
+  ENABLE_ANTICHEAT: "true"
+  SESSION_TIMEOUT_SEC: "3600"
+  MAX_PLAYERS_PER_TABLE: "6"
+  # Connection URLs reference secrets managed by poker-secrets.
+  # Set via POKER_REDIS_URL / POKER_POSTGRES_URL env vars from Secret.
+  POKER_REDIS_URL: "redis://poker-redis:6379"
+  POKER_POSTGRES_URL: "postgresql://poker:${DB_PASSWORD}@poker-postgres:5432/poker"
+
+---
+
+# ==================== Secret ====================
+# IMPORTANT: Never commit real secrets to version control.
+# Use 'kubectl create secret generic' or a tool like sops/sealed-secrets.
+# Generate values with: openssl rand -base64 32
+apiVersion: v1
+kind: Secret
+metadata:
+  name: poker-secrets
+  namespace: poker-engine
+type: Opaque
+stringData:
+  # Override these with real values before deploying:
+  jwt-secret: "REPLACE-WITH-strong-random-secret-at-least-32-chars"
+  db-password: "REPLACE-WITH-strong-database-password"
+  admin-token: "REPLACE-WITH-admin-token"
+  redis-password: "REPLACE-WITH-redis-password"
+  tls-cert: ""  # PEM-encoded TLS certificate (or use cert-manager)
+  tls-key: ""   # PEM-encoded TLS private key
+
+---
+
+# ==================== StatefulSet (Main Server) ====================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: poker-server
+  namespace: poker-engine
+  labels:
+    app: poker-server
+spec:
+  serviceName: poker-server
+  replicas: 1
+  selector:
+    matchLabels:
+      app: poker-server
+  template:
+    metadata:
+      labels:
+        app: poker-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: poker-server
+        image: pokerteam/poker-engine:v0.3.0
+        ports:
+        - containerPort: 9001
+          name: websocket
+        - containerPort: 9000
+          name: http
+        - containerPort: 9002
+          name: spectator
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: DB_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: poker-config
+              key: DB_PATH
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: poker-secrets
+              key: jwt-secret
+        - name: WS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: poker-config
+              key: WS_PORT
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: poker-config
+              key: LOG_LEVEL
+        - name: CFR_MODEL_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: poker-config
+              key: CFR_MODEL_PATH
+        - name: ML_MODEL_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: poker-config
+              key: ML_MODEL_PATH
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "1Gi"
+          limits:
+            cpu: "4000m"
+            memory: "4Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 9001
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+        volumeMounts:
+        - name: data-storage
+          mountPath: /data
+        - name: model-storage
+          mountPath: /models
+      volumes:
+      - name: data-storage
+        persistentVolumeClaim:
+          claimName: poker-data-pvc
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: poker-models-pvc
+---
+
+# ==================== PVC ====================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: poker-data-pvc
+  namespace: poker-engine
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: standard
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: poker-models-pvc
+  namespace: poker-engine
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard
+
+---
+
+# ==================== Service ====================
+apiVersion: v1
+kind: Service
+metadata:
+  name: poker-server
+  namespace: poker-engine
+spec:
+  selector:
+    app: poker-server
+  ports:
+  - name: websocket
+    port: 9001
+    targetPort: 9001
+  - name: http
+    port: 9000
+    targetPort: 9000
+  - name: spectator
+    port: 9002
+    targetPort: 9002
+
+---
+
+# ==================== Ingress (Nginx/Traefik) ====================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: poker-ingress
+  namespace: poker-engine
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/websocket-services: "poker-server"
+    cert-manager.io/cluster-issuer: "letsencrypt-production"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - poker.example.com
+    secretName: poker-tls
+  rules:
+  - host: poker.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: poker-server
+            port:
+              name: http
+      - path: /ws
+        pathType: Prefix
+        backend:
+          service:
+            name: poker-server
+            port:
+              name: websocket
+      - path: /spectator
+        pathType: Prefix
+        backend:
+          service:
+            name: poker-server
+            port:
+              name: spectator
+
+---
+
+# ==================== Metrics Exporter ====================
+apiVersion: v1
+kind: Service
+metadata:
+  name: poker-metrics
+  namespace: poker-engine
+  labels:
+    app: poker-server
+spec:
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  selector:
+    app: poker-server
+
+---
+
+# ==================== NetworkPolicy ====================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: poker-network-policy
+  namespace: poker-engine
+spec:
+  podSelector:
+    matchLabels:
+      app: poker-server
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 9001
+    - protocol: TCP
+      port: 9000
+    - protocol: TCP
+      port: 9002
+    - protocol: TCP
+      port: 9090
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgresql
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
+
+# NOTE: HPA commented out -- not compatible with StatefulSet + SQLite single-writer.# For horizontal scaling, switch to Deployment + shared PostgreSQL backend.
+# ---
+# 
+# # ==================== Horizontal Pod Autoscaler (预留) ====================
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: poker-server-hpa
+#   namespace: poker-engine
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: StatefulSet
+#     name: poker-server
+#   minReplicas: 1
+#   maxReplicas: 3
+#   metrics:
+#   - type: Resource
+#     resource:
+#       name: cpu
+#       target:
+#         type: Utilization
+#         averageUtilization: 70
+#   - type: Resource
+#     resource:
+#       name: memory
+#       target:
+#         type: Utilization
+#         averageUtilization: 80

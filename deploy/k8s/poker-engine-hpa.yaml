@@ -1,0 +1,184 @@
+# Multi-replica poker-server with HPA + sticky sessions (Redis-backed routing)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: poker-config-v2
+  namespace: poker-engine
+data:
+  POKER_PRODUCTION: "1"
+  POKER_DB_PATH: "/data/poker_engine.db"
+  WS_PORT: "9001"
+  HTTP_PORT: "9000"
+  LOG_LEVEL: "info"
+  POKER_REDIS_URL: "redis://poker-redis:6379"
+  POKER_POSTGRES_URL: "postgresql://poker:secret@poker-postgres:5432/poker"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poker-server
+  namespace: poker-engine
+  labels:
+    app: poker-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: poker-server
+  template:
+    metadata:
+      labels:
+        app: poker-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9001"
+        prometheus.io/path: "/metrics"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: poker-server
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: poker-server
+          image: pokerteam/poker-engine:latest
+          ports:
+            - containerPort: 9001
+              name: websocket
+            - containerPort: 9000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: poker-config-v2
+            - secretRef:
+                name: poker-secrets
+          env:
+            - name: POKER_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POKER_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: poker-secrets
+                  key: jwt-secret
+            - name: POKER_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: poker-secrets
+                  key: admin-token
+                  optional: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9001
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9001
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: poker-server
+  namespace: poker-engine
+spec:
+  selector:
+    app: poker-server
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
+  ports:
+    - name: websocket
+      port: 9001
+      targetPort: 9001
+    - name: http
+      port: 9000
+      targetPort: 9000
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: poker-server-hpa
+  namespace: poker-engine
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: poker-server
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: poker-ingress-v2
+  namespace: poker-engine
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/websocket-services: "poker-server"
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "poker-route"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: poker.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: poker-server
+                port:
+                  number: 9001

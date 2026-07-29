@@ -1,0 +1,37 @@
+# =============================================================================
+# Prometheus 采集配置
+# =============================================================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "rules/poker.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - 'alertmanager:9093'
+
+scrape_configs:
+  - job_name: 'poker-engine'
+    scrape_interval: 5s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['poker-server:9090']
+        labels:
+          instance: poker-main
+          environment: production
+
+  - job_name: 'node'
+    static_configs:
+      - targets: ['localhost:9100']
+
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['localhost:9187']
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['poker-redis:9121']

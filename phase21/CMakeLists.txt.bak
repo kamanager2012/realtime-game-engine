@@ -1,0 +1,68 @@
+cmake_minimum_required(VERSION 3.16)
+project(poker_engine_phase21 LANGUAGES CXX)
+
+set(PHASE21_SOURCES
+    src/vault_manager.cpp
+    src/mtls_service.cpp
+    src/gdpr_engine.cpp
+    src/ip_reputation.cpp
+    src/behavior_analyzer.cpp
+    src/security_policy_engine.cpp
+    src/crypto_utils.cpp
+    # src/websocket_mtls.cpp  # disabled: uWS API mismatch
+    # src/structured_audit_logger.cpp  # disabled: duplicate + missing dependency
+    # src/tracer.cpp  # disabled: missing dependency
+    # src/table_actor_traced.cpp  # disabled: depends on unimplemented Actor framework
+    src/structured_logger.cpp
+    src/secure_router.cpp
+)
+
+set(PHASE21_HEADERS
+    include/poker_engine/security/vault_manager.h
+    include/poker_engine/security/mtls_service.h
+    include/poker_engine/security/gdpr_engine.h
+    include/poker_engine/security/ip_reputation.h
+    include/poker_engine/security/behavior_analyzer.h
+    include/poker_engine/security/security_policy_engine.h
+    include/poker_engine/security/crypto_utils.h
+    include/poker_engine/security/secure_router.h
+    include/poker_engine/base/structured_audit_logger.h
+    include/poker_engine/base/structured_logger.h
+    include/poker_engine/observability/tracer.h
+)
+
+add_library(poker_engine_phase21 STATIC ${PHASE21_SOURCES} ${PHASE21_HEADERS})
+
+target_include_directories(poker_engine_phase21
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/phase19/include
+        ${CMAKE_SOURCE_DIR}/phase20/include
+        ${CMAKE_SOURCE_DIR}/phase18/include
+        ${CMAKE_SOURCE_DIR}/phase16/include
+        ${CMAKE_SOURCE_DIR}/phase14/include
+        ${CMAKE_SOURCE_DIR}/phase13/include
+        ${CMAKE_SOURCE_DIR}/phase12/include
+        ${CMAKE_SOURCE_DIR}/core/include
+)
+
+# Dependencies
+find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
+find_package(nlohmann_json QUIET)
+find_package(spdlog QUIET)
+
+target_link_libraries(poker_engine_phase21
+    PUBLIC
+        poker_engine_core
+        poker_engine_phase16
+        poker_engine_phase19
+        OpenSSL::Crypto
+        OpenSSL::SSL
+    PRIVATE
+        Threads::Threads
+        nlohmann_json::nlohmann_json
+        spdlog::spdlog
+)

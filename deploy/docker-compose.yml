@@ -1,0 +1,218 @@
+# =============================================================================
+# 德州扑克引擎 — Docker Compose 部署
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ========== 扑克服务器 ==========
+  poker-server-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: poker-engine-1
+    ports:
+      - "127.0.0.1:9001:9001"   # WebSocket (localhost only, via nginx)
+      - "127.0.0.1:9000:9000"   # HTTP API (localhost only, via nginx)
+      - "127.0.0.1:9002:9002"   # Spectator
+    # Metrics port NOT exposed to host — Prometheus accesses via Docker network.
+    # expose:
+    #   - "9090"
+    environment:
+      - POKER_PRODUCTION=1
+      - POKER_DB_PATH=/data/poker_engine.db
+      - DB_PATH=/data/poker_engine.db
+      - POKER_JWT_SECRET=${JWT_SECRET}
+      - POKER_ADMIN_TOKEN=${POKER_ADMIN_TOKEN}
+      - JWT_SECRET=${JWT_SECRET}
+      - WS_PORT=9001
+      - HTTP_PORT=9000
+      - SPEC_PORT=9002
+      - LOG_LEVEL=info
+      - CFR_MODEL_PATH=/models/cfr_model.cfr
+      - ML_MODEL_PATH=/models/ml_cheat_model.bin
+      - ENABLE_ANTICHEAT=true
+      - MAX_TABLES=100
+      - AI_STRATEGY=cfr
+      - POKER_REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POKER_POSTGRES_URL=postgresql://poker:${DB_PASSWORD}@postgres:5432/poker
+      - POKER_INSTANCE_ID=poker-engine-1
+    volumes:
+      - poker-data:/data
+      - poker-models:/models
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    networks:
+      - poker-network
+
+  # NOTE: poker-server-2 is for horizontal scaling testing only.
+  # Running two instances with separate SQLite databases creates two isolated
+  # poker worlds. For production scaling, use shared PostgreSQL + Redis PubSub.
+  # Uncomment and configure POKER_INSTANCE_ID before using.
+  # poker-server-2:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #     target: production
+  #   container_name: poker-engine-2
+  #   ports:
+  #     - "127.0.0.1:9011:9001"
+  #   environment:
+  #     - POKER_PRODUCTION=1
+  #     - POKER_DB_PATH=/data/poker_engine.db
+  #     - DB_PATH=/data/poker_engine.db
+  #     - POKER_JWT_SECRET=${JWT_SECRET}
+  #     - POKER_ADMIN_TOKEN=${POKER_ADMIN_TOKEN}
+  #     - JWT_SECRET=${JWT_SECRET}
+  #     - POKER_REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+  #     - POKER_POSTGRES_URL=postgresql://poker:${DB_PASSWORD}@postgres:5432/poker
+  #     - POKER_INSTANCE_ID=poker-engine-2
+  #     - LOG_LEVEL=info
+  #   volumes:
+  #     - poker-data-2:/data
+  #   depends_on:
+  #     - redis
+  #     - postgres
+  #   restart: unless-stopped
+  #   networks:
+  #     - poker-network
+
+  # ========== PostgreSQL ==========
+  postgres:
+    image: postgres:16-alpine
+    container_name: poker-postgres
+    environment:
+      - POSTGRES_DB=poker
+      - POSTGRES_USER=poker
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d
+    ports:
+      - "127.0.0.1:5432:5432"   # localhost only for dev tools
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    restart: unless-stopped
+    networks:
+      - poker-network
+
+  # ========== Redis (会话缓存) ==========
+  redis:
+    image: redis:7-alpine
+    container_name: poker-redis
+    ports:
+      - "127.0.0.1:6379:6379"   # localhost only
+    volumes:
+      - redis-data:/data
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+    networks:
+      - poker-network
+
+  # ========== Prometheus ==========
+  prometheus:
+    image: prom/prometheus:v2.49.0
+    container_name: prometheus
+    ports:
+      - "127.0.0.1:9091:9090"   # localhost only
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./deploy/monitoring/prometheus-rules.yaml:/etc/prometheus/rules/poker.yml
+      - ./deploy/monitoring/alertmanager.yml:/etc/prometheus/alertmanager.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      # To enable basic auth, add to prometheus.yml: basic_auth_users with htpasswd.
+      # Then uncomment: --web.config.file=/etc/prometheus/web-config.yml
+      # --web.config.file=/etc/prometheus/web-config.yml
+    depends_on:
+      - alertmanager
+    restart: unless-stopped
+    networks:
+      - poker-network
+
+  # ========== Grafana ==========
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: grafana
+    ports:
+      - "127.0.0.1:3000:3000"   # localhost only
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/monitoring/grafana-dashboard.json:/etc/grafana/provisioning/dashboards/poker.json
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    restart: unless-stopped
+    networks:
+      - poker-network
+
+  # ========== Nginx (反向代理 + SSL) ==========
+  # ========== Alertmanager ==========
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"   # localhost only
+    volumes:
+      - ./deploy/monitoring/alertmanager.yml:/etc/alertmanager/config.yml
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+    restart: unless-stopped
+    networks:
+      - poker-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: poker-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf
+      - nginx-ssl:/etc/nginx/ssl
+    depends_on:
+      - poker-server-1
+      - poker-server-2
+    restart: unless-stopped
+    networks:
+      - poker-network
+
+volumes:
+  poker-data:
+  poker-data-2:
+  poker-models:
+  pg-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+  nginx-ssl:
+
+networks:
+  poker-network:
+    driver: bridge

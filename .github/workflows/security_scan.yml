@@ -1,0 +1,203 @@
+# =============================================================================
+# 安全扫描 CI 流水线
+# =============================================================================
+name: Security Scan
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * *'  # 每天凌晨2点全量扫描
+
+jobs:
+  # ========== 依赖漏洞扫描 ==========
+  dependency-check:
+    name: 依赖漏洞扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 运行 OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'poker-engine'
+          path: '.'
+          fail_on_cvss: 7
+          format: 'JSON'
+          out: 'dependency-check-report.json'
+
+      - name: 上传扫描报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: dependency-check-report.json
+
+  # ========== SAST 静态分析 ==========
+  sast:
+    name: 静态代码分析
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # C++ 静态分析
+      - name: 运行 clang-tidy
+        run: |
+          mkdir -p build-sast && cd build-sast
+          cmake -DCMAKE_CXX_CLANG_TIDY="clang-tidy;-checks=*,-modernize-*,-readability-*" \
+                -DCMAKE_BUILD_TYPE=Debug ..
+          cmake --build . --target poker_tests 2>&1 | tee tidy.log
+          cd ..
+
+          # 检查是否有 warning
+          if grep -q "warning:" tidy.log; then
+            echo "::warning::clang-tidy 发现代码质量问题"
+            cat tidy.log | grep "warning:"
+          fi
+
+      # C++ 漏洞扫描
+      - name: 运行 CodeQL (C++)
+        uses: github/codeql-action/init@v3
+        with:
+          languages: cpp
+
+      - name: CodeQL 自动编译
+        uses: github/codeql-action/autobuild@v3
+
+      - name: CodeQL 分析
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:cpp"
+
+      # Python 安全扫描
+      - name: Bandit Python 扫描
+        run: |
+          pip install bandit
+          bandit -r frontend/ -f json -o bandit-report.json || true
+
+      # JavaScript/TypeScript 扫描
+      - name: Semgrep 扫描
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/default
+            p/owasp-top-ten
+            p/security-audit
+
+  # ========== 密钥泄露检测 ==========
+  secret-detection:
+    name: 密钥泄露检测
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 扫描完整历史
+
+      - name: 运行 trufflehog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified --severity=high
+
+      - name: 运行 gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ========== 容器镜像安全扫描 ==========
+  container-scan:
+    name: 容器镜像扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建镜像
+        run: docker compose build poker-server
+
+      - name: Trivy 漏洞扫描
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'poker-engine:latest'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          timeout: '30m'
+
+      - name: 上传 Trivy 报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-results.sarif
+
+  # ========== 合规检查 ==========
+  compliance:
+    name: 合规性检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 检查硬编码密钥
+      - name: 检测硬编码密钥
+        run: |
+          echo "扫描硬编码密钥..."
+          grep -rn "password\s*=" --include="*.cpp" --include="*.h" --include="*.py" . | grep -v test | grep -v example || echo "✓ 未发现硬编码密码"
+          grep -rn "secret\s*=" --include="*.yaml" --include="*.yml" --include="*.env" . | grep -v example || echo "✓ 未发现硬编码密钥"
+
+          # 检查 SQL 字符串拼接
+          grep -rn '".*SELECT.*" +\|".*INSERT.*" +\|".*UPDATE.*" +\|".*DELETE.*" +' \
+            --include="*.cpp" --include="*.h" | grep -v SafeQuery | grep -v test || \
+            echo "✓ 未发现 SQL 字符串拼接"
+
+          # 检查裸 new/new[]
+          grep -rn 'new\s\+\w\+\s*;' --include="*.cpp" --include="*.h" | \
+            grep -v "std::make_" | grep -v test | head -20 || \
+            echo "✓ 未发现裸 new（可能）"
+
+      # OWASP 检查清单
+      - name: OWASP 安全检查清单
+        run: |
+          echo "=== OWASP 合规检查 ==="
+
+          # A01:2021 - 失效的访问控制
+          echo "检查 A01: 访问控制..."
+          grep -rn "player_id" --include="*.cpp" src/ | wc -l
+
+          # A02:2021 - 密码失效
+          echo "检查 A02: 密码处理..."
+          grep -rn "bcrypt\|argon2\|PBKDF2\|password_hash" --include="*.cpp" . | wc -l
+
+          # A03:2021 - 注入
+          echo "检查 A03: 注入防护..."
+          grep -rn "SafeQuery\|PreparedStatement\|parameterized" --include="*.cpp" . | wc -l
+
+          echo "=== 检查完成 ==="
+
+  # ========== 测试门禁 ==========
+  test-gate:
+    name: 安全相关测试
+    runs-on: ubuntu-latest
+    needs: [sast]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建
+        run: |
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON ..
+          cmake --build . -j$(nproc)
+
+      - name: 运行安全相关测试
+        run: |
+          cd build
+          ./tests/poker_tests --gtest_filter="*Security*:*Safe*:*Crypto*:*Secret*:*Audit*"
+
+      - name: 代码覆盖率
+        if: github.event_name == 'pull_request'
+        run: |
+          cd build
+          cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="--coverage" ..
+          cmake --build . -j$(nproc)
+          ./tests/poker_tests
+          gcov *.gcno

@@ -1,0 +1,265 @@
+// =============================================================================
+// 德州扑克引擎 — FlatBuffers Schema
+// =============================================================================
+// 使用 FlatBuffers 替代 JSON 作为高性能序列化格式
+// 零拷贝反序列化，内存效率极高
+
+namespace poker_engine.fbs;
+
+// ==================== 基础类型 ====================
+
+union CardUnion { Nothing, Card }
+
+table Nothing {}
+
+table Card {
+    index: uint8;       // 0-51
+}
+
+// ==================== 手牌 ====================
+
+table HoleCards {
+    c1: Card;
+    c2: Card;
+}
+
+// ==================== 玩家状态 ====================
+
+enum PlayerStatus : byte {
+    Idle = 0,
+    Active = 1,
+    Folded = 2,
+    AllIn = 3,
+    SittingOut = 4,
+}
+
+enum ActionType : byte {
+    Fold = 0,
+    Check = 1,
+    Call = 2,
+    Bet = 3,
+    Raise = 4,
+    AllIn = 5,
+}
+
+table Action {
+    type: ActionType;
+    amount: int64;
+    street: uint8;       // 0-3 (preflop to river)
+    player_id: int64;
+    timestamp_ms: int64;
+}
+
+table PlayerState {
+    player_id: int64;
+    seat_index: int8;
+    chips: int64;
+    bet_this_round: int64;
+    total_invested: int64;
+    status: PlayerStatus;
+    action_status: ActionType;
+    occupied: bool;
+    display_name: string;
+    hole_cards: [Card];   // 最多 2 张
+    is_winner: bool;
+}
+
+// ==================== 游戏状态 ====================
+
+enum GamePhase : byte {
+    Waiting = 0,
+    Preflop = 1,
+    Flop = 2,
+    Turn = 3,
+    River = 4,
+    Showdown = 5,
+    HandOver = 6,
+}
+
+enum GameStatus : byte {
+    Idle = 0,
+    Playing = 1,
+    Paused = 2,
+    Finished = 3,
+}
+
+table GameState {
+    table_id: string;
+    hand_number: uint64;
+    phase: GamePhase;
+    status: GameStatus;
+    dealer_seat: int8;
+    current_player_id: int64;
+    current_bet: int64;
+    min_raise_size: int64;
+    pot: int64;
+    big_blind: int64;
+    small_blind: int64;
+    community_cards: [Card];     // 最多 5 张
+    winners: [int64];            // 赢家 ID 列表
+    players: [PlayerState];
+    actions: [Action];
+    timestamp_ms: int64;
+}
+
+// ==================== WS 消息 ====================
+
+enum WSMessageType : byte {
+    JoinTable = 0,
+    LeaveTable = 1,
+    PlayerAction = 2,
+    GetState = 3,
+    TableState = 4,
+    GameEvent = 5,
+    Heartbeat = 6,
+    HeartbeatAck = 7,
+    Error = 8,
+    ReplayEvent = 9,
+    ReplaySnapshot = 10,
+}
+
+table WSMessage {
+    type: WSMessageType;
+    seq: uint64;
+    timestamp_ms: int64;
+    payload: [ubyte];     // FlatBuffer 内嵌二进制
+}
+
+table WSMessageBatch {
+    messages: [WSMessage];
+    compression: bool;    // 是否压缩
+}
+
+// ==================== 重放相关 ====================
+
+enum ReplayEventType : byte {
+    HandStart = 0,
+    BlindsPosted = 1,
+    DealHoleCards = 2,
+    ActionTaken = 3,
+    DealCommunity = 4,
+    Showdown = 5,
+    PotDistribution = 6,
+    HandEnd = 7,
+}
+
+table ReplayEvent {
+    sequence_id: uint64;
+    type: ReplayEventType;
+    hand_id: int64;
+    player_id: int64;
+    timestamp_ms: double;
+    details: [ubyte];     // FlatBuffer 内嵌
+}
+
+table HandSnapshot {
+    hand_id: int64;
+    hand_number: uint64;
+    phase: GamePhase;
+    total_pot: int64;
+    community_cards: [Card];
+    winners: [int64];
+    players: [PlayerState];
+}
+
+// ==================== 锦标赛 ====================
+
+enum TournamentStatus : byte {
+    Pending = 0,
+    Running = 1,
+    Paused = 2,
+    Finished = 3,
+    Cancelled = 4,
+}
+
+table TournamentState {
+    tournament_id: int64;
+    name: string;
+    status: TournamentStatus;
+    current_blind_level: int;
+    small_blind: int64;
+    big_blind: int64;
+    ante: int64;
+    remaining_players: int;
+    total_players: int;
+    prize_pool: int64;
+    elapsed_seconds: double;
+    current_hand: GameState;
+    leaderboard: [PlayerState];
+}
+
+enum AlertLevel : byte {
+    Clean = 0,
+    Low = 1,
+    Medium = 2,
+    High = 3,
+    Confirmed = 4,
+}
+
+table TournamentAlert {
+    player_id: int64;
+    player_name: string;
+    level: AlertLevel;
+    score: double;
+    reason: string;
+}
+
+// ==================== 性能指标 ====================
+
+table PerformanceMetrics {
+    ws_connections: int;
+    active_tables: int;
+    messages_per_second: double;
+    avg_latency_ms: double;
+    p99_latency_ms: double;
+    memory_mb: double;
+    cpu_percent: double;
+    anticheat_alerts_total: int;
+    db_pool_active: int;
+    db_pool_max: int;
+}
+
+// ==================== RPC 请求/响应 ====================
+
+table LoginRequest {
+    username: string;
+    password_hash: string;
+}
+
+table LoginResponse {
+    success: bool;
+    token: string;
+    player_id: int64;
+    display_name: string;
+    error_code: uint16;
+}
+
+table JoinTableRequest {
+    table_id: string;
+    seat_index: int8;
+    buy_in: int64;
+}
+
+table JoinTableResponse {
+    success: bool;
+    table_state: GameState;
+    error_code: uint16;
+}
+
+table ActionRequest {
+    table_id: string;
+    action: ActionType;
+    amount: int64;
+}
+
+table ActionResponse {
+    success: bool;
+    new_state: GameState;
+    reward: int64;
+    next_player: int64;
+    is_terminal: bool;
+}
+
+// ==================== 根消息 ====================
+
+root_type WSMessage;

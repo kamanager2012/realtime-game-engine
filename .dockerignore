@@ -1,0 +1,41 @@
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# Build artifacts
+build/
+cmake-build-*/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.vs/
+
+# Environment / secrets
+.env
+.env.*
+*.db
+*.db-journal
+*.db-wal
+poker_data.db
+
+# Dependencies
+node_modules/
+
+# Documentation (not needed in image)
+docs/
+*.md
+!README.md
+
+# OS files
+.DS_Store
+Thumbs.db
