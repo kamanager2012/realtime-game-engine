@@ -9,6 +9,10 @@
 > deterministic state transitions, provably-fair RNG, event sourcing, ledger
 > accounting, and anti-cheat infrastructure. **Poker (Texas Hold'em / Omaha) is
 > the reference implementation** — the engine is game-agnostic at its core.
+>
+> **~72,000 lines of C++20** (engine + game, excluding vendored dependencies),
+> plus a TypeScript frontend — a real, auditable, low-level real-time system,
+> not a Python demo.
 
 > **Not a real-money / gambling platform.** This project provides infrastructure
 > for real-time multiplayer games. It does not provide gambling services or
@@ -185,6 +189,9 @@ cmake -B build -DOFFLINE_BUILD=ON                        # offline
 | [docs/SECURITY.md](docs/SECURITY.md) | Security hardening & reporting |
 | [docs/FAIRNESS.md](docs/FAIRNESS.md) | Provably-fair RNG design |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | Adversary model & mitigations |
+| [docs/game-plugin-guide.md](docs/game-plugin-guide.md) | How to add a new game on the runtime |
+| [docs/replay-format.md](docs/replay-format.md) | Event-sourcing / replay contract |
+| [docs/ledger-design.md](docs/ledger-design.md) | Integer chip ledger & `Reconcile()` |
 | [docs/ALGORITHMS.md](docs/ALGORITHMS.md) | Algorithm inventory |
 | [docs/adr/](docs/adr/) | Architecture Decision Records |
 

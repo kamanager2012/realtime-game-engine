@@ -28,6 +28,11 @@ node_modules/
 *.db-wal
 *.db-shm
 
+# Runtime artifacts
+*.audit
+audit_logs/
+logs/
+
 # Omitted large generated lookup tables (Omaha / PLO only; opt-in via
 # scripts/gen_omaha_tables.sh). Texas Hold'em needs none of these.
 third_party/PokerHandEvaluator/src/tables_plo*.c

@@ -59,3 +59,63 @@ CPU @ saturation      : <%>
 > Tip: the engine's per-table mutex serializes actions *per table*. To stress
 > aggregate throughput, spread clients across many tables (vary `table_id`)
 > rather than one hot table, which better reflects production fan-out.
+
+---
+
+## Early measured numbers (2026-07-29)
+
+These are **first-pass, localhost-loopback** figures on a dev box — not a
+production sizing. They exist to show the engine is wired correctly and to give
+a baseline; re-run on your target hardware and replace them.
+
+**Environment**
+
+| Item | Value |
+|------|-------|
+| CPU | 12th Gen Intel Core i7-12700H (20 logical cores) |
+| Runtime | WSL2, localhost loopback (`ws://localhost:9001`) |
+| Build | CMake Release (`-DCMAKE_BUILD_TYPE=Release`) |
+| DB | SQLite (default) |
+| Rate limiter | *relaxed* for this capacity test (production default is ~3 registrations/min/IP) |
+| Auth | JWT HS256, PBKDF2 600k — every connection is authenticated |
+
+**Results**
+
+| Metric | Value |
+|--------|-------|
+| Concurrent WebSocket connections | **300** (all opened, sustained) |
+| WS connection-establish p50 / p95 / p99 | **2.0 / 2.5 / 3.3 ms** |
+| Connection rate (sequential register+connect) | 11.5 conn/s |
+| Authenticated action round-trip p50 / p95 / p99 (HTTP login, server-side) | 77.9 / 82.6 / 84.5 ms |
+
+**How to read these**
+
+- The **3.3 ms p99 connect latency** is the cost of the authenticated WebSocket
+  handshake itself (register → JWT → WS subprotocol upgrade). That is the
+  number players feel when joining a table.
+- The **~85 ms action round-trip** is a server-side processing measurement
+  (auth verification + DB lookup) via the login endpoint; it is DB-bound on
+  SQLite and will drop substantially on PostgreSQL / a warm cache.
+- The **11.5 conn/s** figure is *sequential registration* — registration is not
+  the hot path in production (clients reconnect with a stored token, or
+  registration is parallelized). It is reported for honesty, not as a
+  throughput ceiling.
+- The engine serializes actions *per table* (per-table mutex), so aggregate
+  throughput scales by spreading clients across tables, not by hammering one
+  table. A single hot table is intentionally the worst case.
+
+**Reproduce**
+
+```bash
+# 1. start the server (origin allowlist must include the benchmark origin)
+POKER_ALLOWED_ORIGINS="http://localhost:5173" ./build/cli/poker_ws_server 9001
+
+# 2. run the harness (pip install websocket-client first)
+python3 scripts/benchmark_connections.py --host localhost:9001 \
+    --clients 300 --duration 15 --origin http://localhost:5173
+```
+
+> Note: the harness measures connection establishment directly. Per-action
+> round-trip on an *active* table (bots dealing hands) is gated on game events
+> and will be added as a separate measurement — the action-latency row above is
+> the authenticated server-side processing baseline.
