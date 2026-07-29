@@ -9,7 +9,7 @@ ValidationResult ActionValidator::Validate(const GameAction& action, const Playe
                                            const std::vector<PlayerState*>& all_players,
                                            Chips current_bet, Chips pot, Chips big_blind,
                                            Chips ante, int num_active_players, int num_all_in,
-                                           int street) {
+                                           int street, Chips last_raise) {
   // Player must be active to act
   if (!player.IsActive() && !player.IsAllIn()) {
     return ValidationResult::Error("Player is not active");
@@ -69,7 +69,12 @@ ValidationResult ActionValidator::Validate(const GameAction& action, const Playe
                                        std::to_string(int(current_bet)));
       }
 
-      Chips min_raise_to = current_bet + big_blind;
+      // NLHE minimum re-raise: current bet plus the size of the PREVIOUS
+      // raise this street (not merely the big blind). E.g. BB=100, raise to
+      // 300 (increment 200) → next minimum is 500, not 400. Before any raise
+      // this street the increment floor is the big blind.
+      Chips min_raise_inc = std::max(big_blind, last_raise);
+      Chips min_raise_to = current_bet + min_raise_inc;
       Chips all_in_to = player_current + player.chips;
 
       // If player can't afford min raise, allow all-in
@@ -99,9 +104,9 @@ ValidationResult ActionValidator::Validate(const GameAction& action, const Playe
 MinRaiseInfo ActionValidator::CalculateMinRaise(const PlayerState& player, Chips current_bet,
                                                 Chips pot, Chips big_blind,
                                                 const std::vector<PlayerState*>& all_players,
-                                                int street) {
+                                                int street, Chips last_raise) {
   MinRaiseInfo info;
-  info.min_raise_to = current_bet + big_blind;
+  info.min_raise_to = current_bet + std::max(big_blind, last_raise);
   info.min_raise_by = info.min_raise_to - player.bet_info.current_bet;
   info.max_bet = player.chips + player.bet_info.current_bet;
   info.is_all_in_less = (info.max_bet < info.min_raise_to);

@@ -23,14 +23,19 @@ struct MinRaiseInfo {
 
 class ActionValidator {
  public:
+  // last_raise = size of the previous full raise this street (defaults to 0,
+  // meaning "no raise yet" → the big blind is the minimum increment, per
+  // NLHE rules).
   static ValidationResult Validate(const GameAction& action, const PlayerState& player,
                                    const std::vector<PlayerState*>& all_players, Chips current_bet,
                                    Chips pot, Chips big_blind, Chips ante,
-                                   int num_active_players, int num_all_in, int street);
+                                   int num_active_players, int num_all_in, int street,
+                                   Chips last_raise = 0);
 
   static MinRaiseInfo CalculateMinRaise(const PlayerState& player, Chips current_bet, Chips pot,
                                         Chips big_blind,
-                                        const std::vector<PlayerState*>& all_players, int street);
+                                        const std::vector<PlayerState*>& all_players, int street,
+                                        Chips last_raise = 0);
 
   static bool IsCapEffectActive(const std::vector<PlayerState*>& all_players, Chips current_bet,
                                 Chips big_blind);

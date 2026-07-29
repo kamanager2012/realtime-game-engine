@@ -41,6 +41,12 @@ LedgerResult ChipLedger::ApplyDelta(int64_t player_id, int64_t delta, const std:
     return result;
   }
   int64_t current = bal_rs.GetRow().GetInt64(0);
+  // Overflow guard: int64 wraparound would turn a credit into a debit.
+  if ((delta > 0 && current > INT64_MAX - delta) ||
+      (delta < 0 && current < INT64_MIN - delta)) {
+    result.error = "overflow";
+    return result;
+  }
   int64_t next = current + delta;
   if (next < 0) {
     result.error = "insufficient_chips";
@@ -65,6 +71,14 @@ LedgerResult ChipLedger::ApplyDelta(int64_t player_id, int64_t delta, const std:
       .Bind(4, next)
       .Bind(5, reference);
   ins.Next();
+  // The audit-trail INSERT must not fail silently: ResultSet::Next() returns
+  // false for both DONE and errors, so verify via the change count. Returning
+  // here without Commit() rolls the whole transaction back — the balance is
+  // never committed without its ledger row.
+  if (db_.RowsAffected() != 1) {
+    result.error = "ledger_insert_failed";
+    return result;
+  }
 
   result.transaction_id = db_.LastInsertRowId();
   result.balance_after = next;

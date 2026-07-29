@@ -1,8 +1,10 @@
 #pragma once
+#include <openssl/rand.h>
+
 #include <chrono>
 #include <mutex>
 #include <optional>
-#include <random>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 
@@ -89,14 +91,18 @@ class AuthManager {
 
  private:
   static std::string GenerateRandomToken() {
-    static std::random_device rd;
-    static std::mt19937_64 rng(rd());
-    static std::uniform_int_distribution<uint64_t> dist;
-
-    std::string token(32, '0');
+    // CSPRNG only: session tokens are bearer credentials. mt19937_64 seeded
+    // from a single random_device u32 has ~32 bits of effective entropy and
+    // is predictable — session hijacking territory. RAND_bytes is OS entropy.
+    unsigned char raw[16];
+    if (RAND_bytes(raw, sizeof(raw)) != 1) {
+      throw std::runtime_error("auth: RAND_bytes failed - no entropy available");
+    }
     const char* hex = "0123456789abcdef";
-    for (int i = 0; i < 32; ++i) {
-      token[i] = hex[dist(rng) & 0xF];
+    std::string token(32, '0');
+    for (int i = 0; i < 16; ++i) {
+      token[2 * i] = hex[raw[i] >> 4];
+      token[2 * i + 1] = hex[raw[i] & 0xF];
     }
     return token;
   }
