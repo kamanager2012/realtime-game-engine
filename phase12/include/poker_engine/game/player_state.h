@@ -31,6 +31,9 @@ struct PlayerState {
   bool is_small_blind = false;
   bool is_big_blind = false;
   bool is_hero = false;
+  // Set when the player left (or was disconnected past grace) mid-hand:
+  // the seat is swept and the stack cashed out when the hand completes.
+  bool leaving = false;
 
   bool IsPlaying() const {
     return seat_state == SeatState::PLAYING || seat_state == SeatState::ALL_IN;

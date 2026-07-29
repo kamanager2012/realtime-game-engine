@@ -262,6 +262,26 @@ bool GameServer::LeaveTable(int32_t player_id, const std::string& table_id) {
   return it->second->LeaveTable(player_id);
 }
 
+std::optional<int64_t> GameServer::CashOutPlayerStack(const std::string& table_id,
+                                                      int32_t player_id) {
+  auto it = tables_.find(table_id);
+  if (it == tables_.end()) return std::nullopt;
+  auto r = it->second->GetGameStateMut().RequestCashOut(player_id);
+  if (!r.has_value()) return std::nullopt;
+  return static_cast<int64_t>(*r);
+}
+
+std::vector<std::pair<int32_t, int64_t>> GameServer::VacateLeavingPlayers(
+    const std::string& table_id) {
+  std::vector<std::pair<int32_t, int64_t>> out;
+  auto it = tables_.find(table_id);
+  if (it == tables_.end()) return out;
+  for (auto& [pid, stack] : it->second->GetGameStateMut().VacateLeavingPlayers()) {
+    out.emplace_back(pid, static_cast<int64_t>(stack));
+  }
+  return out;
+}
+
 bool GameServer::StartGame(const std::string& table_id) { return StartHand(table_id); }
 
 std::string GameServer::OnPlayerAction(int32_t player_id, const std::string& table_id,
@@ -476,7 +496,9 @@ std::string GameServer::GetTableStateJSON(const std::string& table_id,
       << ",\"pot\":" << static_cast<int64_t>(state.GetPot())
       << ",\"current_bet\":" << static_cast<int64_t>(state.GetCurrentBet()) << ",\"min_raise\":2"
       << ",\"big_blind\":2"
-      << ",\"current_player_id\":" << state.GetCurrentPlayerId() << ",\"community_cards\":[";
+      << ",\"current_player_id\":" << state.GetCurrentPlayerId()
+      << ",\"rng_commitment\":\"" << state.GetRngCommitment() << "\""
+      << ",\"community_cards\":[";
 
   const auto& community = state.GetCommunity();
   for (uint8_t i = 0; i < community.count; ++i) {

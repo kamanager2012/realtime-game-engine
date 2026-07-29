@@ -87,6 +87,66 @@ void GameState::ReconnectPlayer(int32_t player_id) {
   }
 }
 
+std::optional<Chips> GameState::RequestCashOut(int32_t player_id) {
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  for (auto& p : players_) {
+    if (p.id != player_id || p.seat_state == SeatState::EMPTY) continue;
+
+    if (IsHandInProgress() && (p.IsActive() || p.IsAllIn())) {
+      // Hand is live — chips in play must keep exactly one owner. Fold an
+      // active player (invested chips remain in the pot) and defer the cash
+      // settlement to hand end; the seat is swept by VacateLeavingPlayers().
+      p.leaving = true;
+      if (p.IsActive()) {
+        p.seat_state = SeatState::FOLDED;
+        num_folded_++;
+        num_active_--;
+        p.acted_this_round = true;
+        EmitActionEvent(p.id, ActionType::FOLD, 0, p.name + " folds (left table)");
+        if (IsBettingRoundComplete()) {
+          EndBettingRound();
+          AdvanceStreet();
+        } else {
+          NextActionSeat();
+        }
+      }
+      return Chips{0};
+    }
+
+    // No live hand: vacate immediately and return the stack. Zero the seat
+    // stack — the chips now belong to the wallet; keeping them here would
+    // double-count in any conservation audit.
+    Chips stack = p.chips;
+    p.chips = 0;
+    p.seat_state = SeatState::EMPTY;
+    p.id = 0;
+    p.name = "";
+    p.hole_cards.Reset();
+    p.bet_info.Reset();
+    p.leaving = false;
+    return stack;
+  }
+  return std::nullopt;
+}
+
+std::vector<std::pair<int32_t, Chips>> GameState::VacateLeavingPlayers() {
+  std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+  std::vector<std::pair<int32_t, Chips>> out;
+  if (IsHandInProgress()) return out;
+  for (auto& p : players_) {
+    if (p.seat_state == SeatState::EMPTY || !p.leaving) continue;
+    out.emplace_back(p.id, p.chips);
+    p.chips = 0;  // ownership moves to the wallet — never double-count
+    p.seat_state = SeatState::EMPTY;
+    p.id = 0;
+    p.name = "";
+    p.hole_cards.Reset();
+    p.bet_info.Reset();
+    p.leaving = false;
+  }
+  return out;
+}
+
 bool GameState::SitDown(int32_t player_id, uint8_t seat) {
   if (seat >= config_.max_players) return false;
   auto& p = players_[seat];
@@ -137,7 +197,15 @@ bool GameState::StartHand() {
   phase_ = GamePhase::DEALING;
   hand_counter_++;
 
-  EmitEvent(GameEvent::HAND_STARTED, "Hand #" + std::to_string(hand_counter_) + " started");
+  // Shuffle BEFORE anything else: the commitment (SHA256(seed‖nonce)) is
+  // bound now — before blinds, before any card is dealt — and is exposed via
+  // GetRngCommitment() so the server can publish it to clients in the very
+  // first table-state broadcast of the hand.
+  rng_dealer_.Shuffle();
+  last_rng_proof_ = rng_dealer_.GetProof().ToString();
+
+  EmitEvent(GameEvent::HAND_STARTED, "Hand #" + std::to_string(hand_counter_) +
+                                         " started commitment=" + rng_dealer_.GetProof().commitment);
 
   RotateDealer();
   PostBlinds();
@@ -163,12 +231,15 @@ bool GameState::ProcessAction(int32_t player_id, const GameAction& action) {
     auto now = std::chrono::steady_clock::now();
     for (auto it = disconnects_.begin(); it != disconnects_.end(); ) {
       if (now - it->second > kDisconnectGrace) {
-        // Find and fold this player.
+        // Find and fold this player, and mark the seat for sweep at hand end
+        // so the remaining stack is credited back to their wallet (no ghost
+        // seat holds chips hostage forever).
         for (auto& p : players_) {
           if (p.id == it->first && p.IsActive()) {
             p.seat_state = SeatState::FOLDED;
             num_folded_++;
             num_active_--;
+            p.leaving = true;
             EmitActionEvent(p.id, ActionType::FOLD, 0, p.name + " folds (disconnect timeout)");
             break;
           }
@@ -228,7 +299,8 @@ bool GameState::ProcessAction(int32_t player_id, const GameAction& action) {
   auto validation = ActionValidator::Validate(
       action, *player, active_ptrs, current_bet_, GetPot(), config_.big_blind, config_.ante,
       ActivePlayerCount(), all_in_count,
-      static_cast<int>(phase_) - static_cast<int>(GamePhase::PREFLOP_BETTING));
+      static_cast<int>(phase_) - static_cast<int>(GamePhase::PREFLOP_BETTING),
+      last_raise_size_);
 
   if (!validation.valid) {
     EmitEvent(GameEvent::ERROR, player->name + ": Invalid - " + validation.error);
@@ -270,6 +342,8 @@ bool GameState::ProcessAction(int32_t player_id, const GameAction& action) {
 
     case ActionType::BET: {
       Chips bet = player->Bet(amount);
+      Chips inc = player->bet_info.current_bet - current_bet_;
+      if (inc >= last_raise_size_) last_raise_size_ = inc;
       current_bet_ = player->bet_info.current_bet;
       actions_since_last_bet_ = 0;
       // Reset others' acted flags since new bet
@@ -284,6 +358,8 @@ bool GameState::ProcessAction(int32_t player_id, const GameAction& action) {
       Chips needed = amount - player->bet_info.current_bet;
       if (needed < 0) needed = 0;
       Chips raised = player->Bet(needed);
+      Chips inc = player->bet_info.current_bet - current_bet_;
+      if (inc >= last_raise_size_) last_raise_size_ = inc;
       current_bet_ = player->bet_info.current_bet;
       actions_since_last_bet_ = 0;
       for (auto& p : players_) {
@@ -297,6 +373,8 @@ bool GameState::ProcessAction(int32_t player_id, const GameAction& action) {
     case ActionType::ALL_IN: {
       Chips allin = player->Bet(player->chips);
       if (player->bet_info.current_bet > current_bet_) {
+        Chips inc = player->bet_info.current_bet - current_bet_;
+        if (inc >= last_raise_size_) last_raise_size_ = inc;
         current_bet_ = player->bet_info.current_bet;
         actions_since_last_bet_ = 0;
         for (auto& p : players_) {
@@ -338,16 +416,26 @@ bool GameState::CheckTimeout() {
   PlayerState* current = GetCurrentPlayer();
   if (!current) return false;
 
-  // Auto-fold the player who exceeded the timeout.
-  PE_LOG_WARN("Action timeout: auto-folding player {} ({}s limit)",
-              current->id, config_.hand_timeout_seconds);
+  Chips to_call = current_bet_ - current->bet_info.current_bet;
+  if (to_call <= 0) {
+    // Nothing to call: checking is free, so a stall costs the player nothing.
+    // Auto-check instead of folding (folding here would punish the player
+    // and let opponents force-fold by stalling the action clock).
+    current->acted_this_round = true;
+    EmitActionEvent(current->id, ActionType::CHECK, 0,
+                    current->name + " checks (timeout)");
+  } else {
+    // Auto-fold the player who exceeded the timeout.
+    PE_LOG_WARN("Action timeout: auto-folding player {} ({}s limit)",
+                current->id, config_.hand_timeout_seconds);
 
-  // Force-fold via internal fold path.
-  current->seat_state = SeatState::FOLDED;
-  num_folded_++;
-  num_active_--;
-  EmitActionEvent(current->id, ActionType::FOLD, 0,
-                  current->name + " folds (timeout)");
+    // Force-fold via internal fold path.
+    current->seat_state = SeatState::FOLDED;
+    num_folded_++;
+    num_active_--;
+    EmitActionEvent(current->id, ActionType::FOLD, 0,
+                    current->name + " folds (timeout)");
+  }
 
   CheckCapEffect();
   if (IsBettingRoundComplete()) {
@@ -371,26 +459,11 @@ void GameState::AdvanceStreet() {
       total_playing++;
   }
 
-  // Only one player remaining (everyone else folded)
+  // Only one player remaining (everyone else folded). Route through the
+  // single payout path (DoShowdown): BuildPots includes folded players'
+  // chips, so the last player wins the full pot — exactly once. (Paying out
+  // here AND in DoShowdown previously double-paid the winner.)
   if (total_playing <= 1) {
-    // Award pot to last player
-    int32_t winner_id = -1;
-    for (const auto& p : players_) {
-      if (p.IsActive() || p.IsAllIn()) {
-        winner_id = p.id;
-        break;
-      }
-    }
-    if (winner_id != -1) {
-      Chips pot = GetPot();
-      for (auto& p : players_) {
-        if (p.id == winner_id) {
-          p.Receive(pot);
-          EmitEvent(GameEvent::PAYOUT,
-                    p.name + " wins $" + std::to_string(int(pot)) + " (uncontested)");
-        }
-      }
-    }
     DoShowdown();
     return;
   }
@@ -453,6 +526,7 @@ void GameState::AdvanceStreet() {
 
 void GameState::StartBettingRound() {
   actions_since_last_bet_ = 0;
+  last_raise_size_ = config_.big_blind;  // min-raise floor resets each street
 
   // If only <=1 active player, skip
   if (ActivePlayerCount() <= 1) {
@@ -568,12 +642,8 @@ void GameState::PostBlinds() {
 }
 
 void GameState::DealHoleCards() {
-  // Single cryptographic shuffle for the whole hand. The commitment is
-  // published (via GetLastRngProof) and the seed/nonce revealed after,
-  // so the entire deal is externally verifiable.
-  rng_dealer_.Shuffle();
-  last_rng_proof_ = rng_dealer_.GetProof().ToString();
-
+  // The deck was shuffled in StartHand (single cryptographic shuffle for the
+  // whole hand, commitment already bound and published). Deal from it.
   const int cards_per_player = config_.HoleCardsPerPlayer();
   for (auto& player : players_) {
     if (player.seat_state == SeatState::SITTING) {
@@ -634,9 +704,22 @@ bool GameState::IsBettingRoundComplete() {
   int active = ActivePlayerCount();
   if (active <= 0) return true;
 
+  // If only one player remains non-folded, the hand is decided — no further
+  // action is meaningful, even if that player hasn't acted this round
+  // (e.g. SB folds preflop heads-up: BB wins immediately, no forced check).
+  // Note all-in players count: with 2+ non-folded the betting may still be
+  // live for the non-all-in remainder.
+  int non_folded = 0;
+  for (const auto& p : players_) {
+    if (p.seat_state == SeatState::PLAYING || p.seat_state == SeatState::ALL_IN) {
+      non_folded++;
+    }
+  }
+  if (non_folded <= 1) return true;
+
   // All active players must have acted and bets must be equal
   bool all_acted = true;
-  double ref_bet = -1;
+  Chips ref_bet = -1;  // integer money only — never float in the betting path
 
   for (const auto& p : players_) {
     if (!p.IsActive()) continue;
@@ -672,11 +755,15 @@ void GameState::DoShowdown() {
   phase_ = GamePhase::SHOWDOWN;
   EmitEvent(GameEvent::SHOWDOWN, "Showdown! Board: " + community_.CardsStr());
 
-  // Collect all non-folded players
+  // Collect every player with chips in the hand — folded players included.
+  // Their investments feed the pots (dead money); BuildPots excludes them
+  // from eligibility. Dropping folded players here would burn their chips.
   std::vector<PlayerState*> all_playing;
+  Chips total_invested = 0;
   for (auto& p : players_) {
-    if (!p.IsFolded()) {
+    if (p.seat_state != SeatState::EMPTY && p.bet_info.total_invested > 0) {
       all_playing.push_back(&p);
+      total_invested += p.bet_info.total_invested;
     }
   }
 
@@ -697,6 +784,7 @@ void GameState::DoShowdown() {
 
   // Evaluate each pot
   int pot_num = 0;
+  Chips total_paid = 0;
   for (auto& pot : pots) {
     pot_num++;
     auto results = ShowdownEvaluator::EvaluatePot(pot.eligible_players, hole_map, comm, pot.amount);
@@ -705,12 +793,20 @@ void GameState::DoShowdown() {
       for (auto& p : players_) {
         if (p.id == sr.player_id) {
           p.Receive(sr.amount_won);
+          total_paid += sr.amount_won;
           EmitEvent(GameEvent::PAYOUT, p.name + " wins $" + std::to_string(sr.amount_won) +
                                            " with " + sr.hand_description + " from pot #" +
                                            std::to_string(pot_num));
         }
       }
     }
+  }
+
+  // Conservation invariant: every chip wagered this hand must be paid out —
+  // no more, no less. A mismatch means chips were created or destroyed.
+  if (total_paid != total_invested) {
+    PE_LOG_ERROR("POT CONSERVATION VIOLATION: invested={} paid={} delta={}",
+                 total_invested, total_paid, total_paid - total_invested);
   }
 
   phase_ = GamePhase::HAND_COMPLETE;
@@ -816,10 +912,14 @@ PlayerState* GameState::GetPlayerAtSeat(uint8_t seat) {
 }
 
 Chips GameState::GetPot() const {
-  Chips total = pot_manager_.TotalPot();
+  // The pot is every chip wagered this hand (folded players included — their
+  // chips remain in the pot as dead money). total_invested accumulates at
+  // Bet() and is only zeroed when the hand is settled, so this sum is exact
+  // at every point during the hand.
+  Chips total = 0;
   for (const auto& p : players_) {
-    if (p.seat_state == SeatState::EMPTY || p.IsFolded()) continue;
-    total += p.bet_info.current_bet;
+    if (p.seat_state == SeatState::EMPTY) continue;
+    total += p.bet_info.total_invested;
   }
   return total;
 }

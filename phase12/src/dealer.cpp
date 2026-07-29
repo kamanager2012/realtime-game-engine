@@ -244,6 +244,10 @@ Dealer::Dealer() : deck_(52), deck_index_(0) {
 void Dealer::GenerateSeed() { GenerateSeedImpl(seed_); }
 
 void Dealer::Shuffle() {
+  // Fresh 256-bit seed EVERY hand. Reusing the seed across hands is fatal to
+  // provable fairness: once hand #1's (seed, nonce) is revealed, the seed is
+  // public and the house could grind nonces offline to choose future decks.
+  GenerateSeedImpl(seed_);
   nonce_ = RandomNonceHex(32);
   // Commitment published before the deal: commitment = SHA256(seed || nonce).
   // Leaks nothing about the upcoming deck until the reveal.

@@ -70,6 +70,20 @@ class GameState {
   bool SitDown(int32_t player_id, uint8_t seat);
   bool StandUp(int32_t player_id);
 
+  // Cash-out leave (explicit player intent). If no hand is live, vacates the
+  // seat immediately and returns the stack. If a hand is live: an active
+  // player is folded (their invested chips stay in the pot) and ALL leavers
+  // keep the seat until hand end — the stack (plus any all-in winnings) is
+  // settled then via VacateLeavingPlayers(). Returns std::nullopt if the
+  // player is not seated; otherwise the stack cashable RIGHT NOW (0 when the
+  // settlement is deferred to hand end).
+  std::optional<Chips> RequestCashOut(int32_t player_id);
+
+  // Sweep seats marked `leaving` between hands; returns each vacated
+  // player's id and final stack so the caller can credit their wallet.
+  // No-op while a hand is in progress.
+  std::vector<std::pair<int32_t, Chips>> VacateLeavingPlayers();
+
   // === Game control ===
   bool StartHand();
   bool ProcessAction(int32_t player_id, const GameAction& action);
@@ -86,6 +100,14 @@ class GameState {
   // RNG fairness: proof of the shuffle used for the most recent hand.
   // Persist this with the hand record so auditors can verify the deal.
   const std::string& GetLastRngProof() const { return last_rng_proof_; }
+
+  // Commitment (SHA256(seed‖nonce)) for the hand in progress. Bound at
+  // StartHand before any card is dealt; publish to clients pre-deal so the
+  // revealed (seed, nonce) at hand end is verifiable against it. Empty when
+  // no hand is in progress.
+  std::string GetRngCommitment() const {
+    return hand_started_ ? rng_dealer_.GetProof().commitment : std::string();
+  }
 
   // Thread safety: lock before modifying game state across threads.
   void Lock() const { state_mutex_.lock(); }
@@ -119,6 +141,10 @@ class GameState {
   uint8_t dealer_seat_ = 0;
   uint8_t action_seat_ = 0;
   Chips current_bet_ = 0;
+  // Size of the previous FULL raise this street (NLHE min-raise tracking).
+  // Reset to the big blind at the start of every betting round; a short
+  // all-in raise does not lower it (no "reopen" semantics here).
+  Chips last_raise_size_ = 0;
   int hand_counter_ = 0;
   bool hand_started_ = false;
   Dealer rng_dealer_;

@@ -699,10 +699,14 @@ static bool leaveTableWithCashOut(int32_t player_id, const std::string& table_id
   error.clear();
   if (player_id <= 0) return false;
   if (table_id.empty()) return false;
-  double stack = g_game->GetPlayerStack(table_id, player_id);
-  if (!g_game->LeaveTable(player_id, table_id)) return false;
+  // RequestCashOut vacates immediately when no hand is live (returns the
+  // stack), or folds+marks the player and defers settlement to hand end
+  // (returns 0). This keeps chips single-owned: the wallet is credited only
+  // for chips no longer in play.
+  auto stack = g_game->CashOutPlayerStack(table_id, player_id);
+  if (!stack.has_value()) return false;
   UntrackPlayerTable(player_id, table_id);
-  cashed_out = static_cast<int64_t>(stack);
+  cashed_out = *stack;
   if (cashed_out > 0 && !creditCashOut(player_id, cashed_out, table_id, error)) {
     std::cout << "[WARN] Cash-out failed pid=" << player_id << " stack=" << cashed_out
               << " err=" << error << "\n";
@@ -1079,6 +1083,22 @@ static void onTableGameEvent(const std::string& table_id, Table& table, const Ga
     persistCompletedHand(table_id, table);
     g_hand_start_chips.erase(table_id);
     g_pending_hands.erase(table_id);
+    // Sweep seats marked `leaving` (explicit cash-out mid-hand or disconnect
+    // grace expiry) and credit their final stacks — includes any winnings an
+    // all-in leaver earned this hand. Must happen BEFORE the next hand starts
+    // so swept seats are never dealt in.
+    if (g_game) {
+      for (const auto& [pid, stack] : g_game->VacateLeavingPlayers(table_id)) {
+        std::string cerr;
+        if (stack > 0 && creditCashOut(pid, stack, table_id, cerr)) {
+          std::cout << "[Server] Hand-end cash-out pid=" << pid << " amount=" << stack
+                    << " balance=" << getAccountChips(pid) << "\n";
+        } else if (stack > 0) {
+          std::cout << "[WARN] Hand-end cash-out failed pid=" << pid << " stack=" << stack
+                    << " err=" << cerr << "\n";
+        }
+      }
+    }
     if (table.PlayerCount() >= 2) table.StartHand();
   }
 }
@@ -1453,13 +1473,19 @@ int main(int argc, char* argv[]) {
     std::string tableId = cl.table_id;
     cl.table_id.clear();
     if (cl.player_id > 0 && !tableId.empty()) {
-      int64_t cashed_out = 0;
-      int64_t balance_after = 0;
-      std::string ledger_err;
-      leaveTableWithCashOut(cl.player_id, tableId, cashed_out, balance_after, ledger_err);
-      if (cashed_out > 0) {
-        std::cout << "[Server] Auto cash-out on disconnect pid=" << cl.player_id << " amount="
-                  << cashed_out << " balance=" << balance_after << "\n";
+      // Disconnect keeps the reconnect grace period: if the seat is retained
+      // (hand in progress), the chips stay in play and the wallet is NOT
+      // credited — crediting here would double-spend them. Only a vacated
+      // seat's stack is cashed out.
+      double stack = g_game->GetPlayerStack(tableId, cl.player_id);
+      if (g_game->LeaveTable(cl.player_id, tableId) &&
+          !g_game->IsPlayerSeated(tableId, cl.player_id)) {
+        int64_t cashed_out = static_cast<int64_t>(stack);
+        std::string ledger_err;
+        if (cashed_out > 0 && creditCashOut(cl.player_id, cashed_out, tableId, ledger_err)) {
+          std::cout << "[Server] Auto cash-out on disconnect pid=" << cl.player_id << " amount="
+                    << cashed_out << " balance=" << getAccountChips(cl.player_id) << "\n";
+        }
       }
     }
     if (cl.player_id > 0 && g_session_store && g_session_store->IsRedisConnected()) {

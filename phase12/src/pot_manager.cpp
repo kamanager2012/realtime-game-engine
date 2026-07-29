@@ -31,18 +31,21 @@ std::vector<Pot> PotManager::BuildPots(const std::vector<PlayerState*>& players)
   pots_.clear();
   total_pot_ = 0;
 
-  // Collect non-folded players with their total investment, sorted ascending
+  // Collect EVERY player with chips invested this hand — including folded
+  // players. Folded players' chips stay in the pot (dead money) but they are
+  // never eligible to win. Excluding them here would destroy their chips,
+  // violating conservation: Σ payouts must equal Σ total_invested.
   struct Contrib {
     int32_t id;
     Chips invested;
-    bool all_in;
+    bool folded;
   };
   std::vector<Contrib> contribs;
   for (auto* p : players) {
-    if (!p || p->IsFolded()) continue;
+    if (!p) continue;
     Chips inv = p->bet_info.total_invested;
     if (inv <= 0) continue;
-    contribs.push_back({p->id, inv, p->IsAllIn()});
+    contribs.push_back({p->id, inv, p->IsFolded()});
   }
   if (contribs.empty()) return pots_;
 
@@ -51,27 +54,42 @@ std::vector<Pot> PotManager::BuildPots(const std::vector<PlayerState*>& players)
 
   // Layered peeling: each layer subtracts the previous threshold
   Chips prev_level = 0;
+  Chips pending_dead = 0;  // dead money from layers with no eligible claimant
   for (size_t i = 0; i < contribs.size(); ++i) {
     Chips level = contribs[i].invested;
     if (level <= prev_level) continue;
 
     Chips layer_height = level - prev_level;
 
-    // Eligible: all players who invested >= level (index i..end)
+    // Eligible: NON-folded players who invested >= level (index i..end)
     std::vector<int32_t> eligible;
     for (size_t j = i; j < contribs.size(); ++j) {
-      eligible.push_back(contribs[j].id);
+      if (!contribs[j].folded) eligible.push_back(contribs[j].id);
     }
 
-    // Count how many players contribute at this layer
+    // All contributors at this layer (folded included) feed the pot.
     int contributors = static_cast<int>(contribs.size()) - static_cast<int>(i);
     Chips pot_amount = layer_height * contributors;
 
-    Pot pot(eligible);
-    pot.Add(pot_amount);
-    pots_.push_back(std::move(pot));
+    if (eligible.empty()) {
+      // Everyone who reached this layer folded — dead money. Hold it and
+      // merge into the next live pot so the chips go to a real winner.
+      pending_dead += pot_amount;
+    } else {
+      Pot pot(eligible);
+      pot.Add(pot_amount + pending_dead);
+      pending_dead = 0;
+      pots_.push_back(std::move(pot));
+    }
 
     prev_level = level;
+  }
+
+  // Defensive: a trailing dead layer with no live pot below it cannot occur
+  // (at least one non-folded player always exists at hand end), but never
+  // let chips vanish — attach to the last pot.
+  if (pending_dead > 0 && !pots_.empty()) {
+    pots_.back().Add(pending_dead);
   }
 
   // Calculate total

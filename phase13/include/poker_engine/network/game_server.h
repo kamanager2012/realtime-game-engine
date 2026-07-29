@@ -53,6 +53,12 @@ class GameServer {
   bool JoinTable(int32_t player_id, const std::string& table_id, const std::string& name,
                  int seat_index, int64_t buy_in, const std::string& token);
   bool LeaveTable(int32_t player_id, const std::string& table_id);
+  // Cash-out leave (explicit intent). Returns std::nullopt if not seated;
+  // otherwise the stack cashable immediately (0 when settlement is deferred
+  // to hand end — see VacateLeavingPlayers).
+  std::optional<int64_t> CashOutPlayerStack(const std::string& table_id, int32_t player_id);
+  // Between hands: sweep `leaving` seats; returns {player_id, stack} to credit.
+  std::vector<std::pair<int32_t, int64_t>> VacateLeavingPlayers(const std::string& table_id);
   bool StartGame(const std::string& table_id);
   std::string OnPlayerAction(int32_t player_id, const std::string& table_id,
                              const std::string& action, int64_t amount, int64_t request_id);
