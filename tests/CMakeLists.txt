@@ -100,10 +100,8 @@ set(FAST_TEST_SOURCES
     hyperparam_test.cpp
     security_integration_test.cpp
     test_cfr_bot_live.cpp
+    property_tests.cpp
 )
-# NOTE: property_tests.cpp is a manual test — timeouts in the game engine
-# make property-based tests slow. Run manually: ./poker_tests --gtest_filter='PropertyTests*'
-# add_executable(property_tests property_tests.cpp)
 
 add_executable(poker_tests ${FAST_TEST_SOURCES})
 target_link_libraries(poker_tests ${TEST_LINK_LIBS})
