@@ -330,4 +330,43 @@ TEST(ArenaTest, AivatIsDeterministic) {
   EXPECT_DOUBLE_EQ(r1.ci95, r2.ci95);
 }
 
+// The per-street CV must fire on forced runouts where one player is all-in and
+// the caller still has chips behind (dealt street-by-street, active_not_allin
+// == 1) — a case the earlier all-in-only version missed. Deep stacks make such
+// spots common. We assert the adjustment triggers, still conserves chips, and
+// tightens the CI without shifting the estimate outside the combined band.
+TEST(ArenaTest, AivatPerStreetCoversCallerBehind) {
+  auto make_rule = []() {
+    AIConfig c;
+    c.strategy = AIStrategyType::RuleBased;
+    c.random_seed = 11;
+    return CreateAIEngine(c);
+  };
+  AIConfig rand_cfg;
+  rand_cfg.random_seed = 22;
+
+  auto rule_raw = make_rule();
+  RandomAgent rand_raw{rand_cfg};
+  MatchConfig raw_cfg = BenchConfig(3000, 4242);
+  raw_cfg.starting_stack = 400 * raw_cfg.table.big_blind;  // deep => caller-behind
+  MatchResult raw = RunHeadsUp(*rule_raw, rand_raw, raw_cfg);
+
+  auto rule_av = make_rule();
+  RandomAgent rand_av{rand_cfg};
+  MatchConfig av = raw_cfg;
+  av.aivat = true;
+  MatchResult r = RunHeadsUp(*rule_av, rand_av, av);
+
+  EXPECT_TRUE(raw.chips_conserved);
+  EXPECT_TRUE(r.chips_conserved);
+  EXPECT_TRUE(r.aivat_applied);
+  EXPECT_GT(r.adjusted_hands, 0);
+  EXPECT_GT(raw.ci95, 0.0);
+  EXPECT_LT(r.ci95, raw.ci95) << "aivat ci=" << r.ci95 << " raw ci=" << raw.ci95;
+  EXPECT_EQ(r.net_by_seat, raw.net_by_seat);
+  EXPECT_EQ(r.net_by_seat[0] + r.net_by_seat[1], 0);
+  EXPECT_LT(std::abs(r.mbb_per_100 - raw.mbb_per_100), raw.ci95 + r.ci95)
+      << "aivat mbb=" << r.mbb_per_100 << " raw mbb=" << raw.mbb_per_100;
+}
+
 }  // namespace
