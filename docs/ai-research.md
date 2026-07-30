@@ -74,6 +74,9 @@ confidence interval:
 # Tighter CI for the same budget via duplicate (seat-rotation) pairing
 ./build/cli/agent_bench --a rule --b random --hands 20000 --seed 1 --duplicate
 
+# Tighter CI via all-in EV adjustment (heads-up runout control variate)
+./build/cli/agent_bench --a rule --b random --hands 20000 --seed 1 --aivat
+
 # Multi-way (N-way) table
 ./build/cli/agent_bench --agents random,rule,random --hands 20000 --seed 1
 
@@ -107,6 +110,24 @@ cancels in agent 0's cross-rotation sum, and the confidence interval shrinks
 sharply for the same number of *distinct* deals. This is honest duplicate
 pairing (it cancels the luck of *who was dealt what*); it is not full AIVAT (it
 does not also subtract a learned control variate on the community runout).
+
+### All-in EV adjustment (runout control variate)
+
+`--aivat` attacks the *other* big variance source in poker: the community
+**runout after both players are all-in**. When a heads-up hand goes all-in, the
+cards left to come are pure chance — a single cooler can swing a hand by a whole
+stack. Instead of scoring such a hand by the cards that happened to fall, the
+arena scores it by its **exact expected value**: with matched investment
+`m = min(inv0, inv1)` and agent 0's exact equity `e0` on the pre-runout board,
+the mbb sample becomes `m · (2·e0 − 1)`. Because `E[realized net] = m·(2e0 − 1)`,
+this is an **unbiased** control variate — it changes only the variance of the
+estimator, not its expectation. Equity is computed by exact enumeration on the
+flop/turn and fixed-seed Monte Carlo preflop, so the result stays deterministic.
+
+`net_by_seat` (and the `Σ net == 0` conservation check) always records the
+**realized** chips; only the mbb/100 *sample* is EV-adjusted. `--aivat` composes
+with `--duplicate` for further reduction. It applies to **heads-up NLHE only**;
+for N-way tables it is ignored (reported as `no`).
 
 ### Multi-way (N-way) matches
 
@@ -146,8 +167,11 @@ opponent.
   the full end-of-hand state — that is showdown information, which is public once
   the hand is over. (The trusted server and CFR *training* self-play still work
   directly on `GameState`; only the agent-facing `Decide` seam is redacted.)
-- **Duplicate, not AIVAT.** `--duplicate` cancels the luck of *which seat was
-  dealt which cards*, but does not yet subtract a learned control variate on the
-  community runout; full AIVAT-style variance reduction is future work.
+- **Partial variance reduction, not full AIVAT.** `--duplicate` cancels the luck
+  of *which seat was dealt which cards*, and `--aivat` replaces the all-in runout
+  with its exact-EV control variate (unbiased, heads-up NLHE only). Neither yet
+  subtracts an imaginary-observations term or a control variate on the *non-all-in*
+  street-by-street public cards; full AIVAT-style variance reduction is future
+  work.
 - Odd hand counts leave a one-hand positional imbalance — negligible at the hand
   counts used for benchmarking.

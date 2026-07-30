@@ -187,6 +187,9 @@ with a 95% confidence interval, asserting chip conservation every hand:
 # duplicate (seat-rotated) dealing cancels card luck → much tighter CI
 ./build/cli/agent_bench --a rule --b random --hands 4000 --seed 1 --duplicate
 
+# all-in EV adjustment: score all-in runouts by exact equity → tighter CI (heads-up)
+./build/cli/agent_bench --a rule --b random --hands 4000 --seed 1 --aivat
+
 # N-way (>2) match, parallelized across threads for throughput
 ./build/cli/agent_bench --agents random,rule,cfr --hands 20000 --threads 8 \
     --cfr-model data/bot_policy.cfr
