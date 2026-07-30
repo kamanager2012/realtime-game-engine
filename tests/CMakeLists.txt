@@ -103,6 +103,7 @@ set(FAST_TEST_SOURCES
     test_cfr_bot_live.cpp
     property_tests.cpp
     arena_test.cpp
+    cfr_observation_test.cpp
 )
 
 add_executable(poker_tests ${FAST_TEST_SOURCES})

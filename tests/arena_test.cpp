@@ -87,12 +87,43 @@ TEST(ArenaTest, LegalActionsAreValidatorLegal) {
       checked++;
     }
 
-    poker_engine::network::DecisionRequest req{state, cur, legal};
+    poker_engine::network::DecisionRequest req{state.ObserveFor(cur), cur, legal};
     GameAction act = agent.Decide(req).action;
     act.player_id = cur;
     ASSERT_TRUE(state.ProcessAction(cur, act)) << act.ToString();
   }
   EXPECT_GT(checked, 0);
+}
+
+// Redaction contract: ObserveFor exposes the viewer's own hole cards but never
+// an opponent's. Opponents appear as PlayerView, which has no hole_cards field
+// at all (structural guarantee), yet still reports has_cards for public "was
+// dealt in" info.
+TEST(ArenaTest, ObservationHidesOpponentHoleCards) {
+  TableConfig t = SmallTable();
+  GameState state(t);
+  state.SetDeterministicDeckSeed(7);
+  state.AddPlayerAtSeat(1, "A", 20000, 0);
+  state.AddPlayerAtSeat(2, "B", 20000, 1);
+  ASSERT_TRUE(state.StartHand());
+
+  auto obs = state.ObserveFor(1);
+  EXPECT_EQ(obs.viewer_id, 1);
+  EXPECT_TRUE(obs.MyHoleCards().IsDealt());
+
+  const auto* me = obs.Me();
+  ASSERT_NE(me, nullptr);
+  EXPECT_TRUE(me->has_cards);
+
+  // The opponent seat reports it was dealt cards, but there is no way to read
+  // which cards (no field exists). Empty seats are skipped.
+  bool saw_opponent = false;
+  for (const auto& pv : obs.players) {
+    if (pv.id != 2) continue;
+    saw_opponent = true;
+    EXPECT_TRUE(pv.has_cards);
+  }
+  EXPECT_TRUE(saw_opponent);
 }
 
 // Regression guard bound to the pot-conservation fix: over many random hands
