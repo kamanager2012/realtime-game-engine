@@ -3,6 +3,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -88,6 +89,18 @@ class GameState {
   bool StartHand();
   bool ProcessAction(int32_t player_id, const GameAction& action);
 
+  // Make the deal reproducible for benchmarking / tests: subsequent hands
+  // derive a distinct deterministic 256-bit deck seed from `seed` (per-hand,
+  // via splitmix64) instead of drawing fresh OS entropy. NOT for production —
+  // reusing a public base seed defeats the commit-reveal fairness guarantee.
+  void SetDeterministicDeckSeed(uint64_t seed);
+
+  // Reset a seated player's stack in place and mark them seated (SITTING) for
+  // the next hand. Benchmark/test convenience so the arena runner can reuse one
+  // table across thousands of hands without RemovePlayer/AddPlayerAtSeat churn.
+  // NOT for production — bypasses buy-in/wallet accounting.
+  bool SetPlayerChips(int32_t player_id, Chips chips);
+
   // === Queries ===
   const std::vector<PlayerState>& AllPlayers() const { return players_; }
   const CommunityCards& GetCommunity() const { return community_; }
@@ -126,6 +139,13 @@ class GameState {
   PlayerState* GetPlayerAtSeat(uint8_t seat);
   int32_t GetCurrentPlayerId() const;
 
+  // Enumerate the legal actions for `player_id` in the current state. This is a
+  // read-only helper for agents and benchmarking: every returned GameAction
+  // passes ActionValidator::Validate. Returns empty when it is not this
+  // player's turn. Aggressive actions (BET/RAISE) carry the *minimum* legal
+  // size; callers may scale the amount up to all-in.
+  std::vector<GameAction> LegalActions(int32_t player_id) const;
+
   using EventCallback = std::function<void(const GameEvent&)>;
   void SetCallback(EventCallback cb) { event_callback_ = cb; }
 
@@ -149,6 +169,9 @@ class GameState {
   bool hand_started_ = false;
   Dealer rng_dealer_;
   std::string last_rng_proof_;
+  // When set, StartHand uses a deterministic per-hand deck seed derived from
+  // this base value (benchmarking / tests only; see SetDeterministicDeckSeed).
+  std::optional<uint64_t> deck_seed_;
   int num_active_ = 0;
   int num_all_in_ = 0;
   int num_folded_ = 0;

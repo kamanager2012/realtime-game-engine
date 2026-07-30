@@ -201,7 +201,34 @@ bool GameState::StartHand() {
   // bound now — before blinds, before any card is dealt — and is exposed via
   // GetRngCommitment() so the server can publish it to clients in the very
   // first table-state broadcast of the hand.
-  rng_dealer_.Shuffle();
+  if (deck_seed_.has_value()) {
+    // Reproducible deals for benchmarking / tests only: derive a distinct
+    // 256-bit seed per hand from the base seed via splitmix64.
+    auto splitmix = [](uint64_t& x) {
+      x += 0x9E3779B97F4A7C15ULL;
+      uint64_t z = x;
+      z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+      z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+      return z ^ (z >> 31);
+    };
+    auto to_hex = [](uint64_t v) {
+      static const char* d = "0123456789abcdef";
+      std::string out(16, '0');
+      for (int i = 15; i >= 0; --i) {
+        out[i] = d[v & 0xF];
+        v >>= 4;
+      }
+      return out;
+    };
+    uint64_t s = *deck_seed_ + static_cast<uint64_t>(hand_counter_) * 0x100000001B3ULL;
+    std::string seed_hex =
+        to_hex(splitmix(s)) + to_hex(splitmix(s)) + to_hex(splitmix(s)) + to_hex(splitmix(s));
+    std::string nonce_hex = to_hex(splitmix(s));
+    rng_dealer_.Reseed(seed_hex, nonce_hex);
+    rng_dealer_.ShuffleWithSeed();
+  } else {
+    rng_dealer_.Shuffle();
+  }
   last_rng_proof_ = rng_dealer_.GetProof().ToString();
 
   EmitEvent(GameEvent::HAND_STARTED, "Hand #" + std::to_string(hand_counter_) +
@@ -355,9 +382,9 @@ bool GameState::ProcessAction(int32_t player_id, const GameAction& action) {
     }
 
     case ActionType::RAISE: {
-      Chips needed = amount - player->bet_info.current_bet;
-      if (needed < 0) needed = 0;
-      Chips raised = player->Bet(needed);
+      // validation.adjusted_amount (== amount) is already the INCREMENTAL chips
+      // to add (actual - player_current). Do not subtract current_bet again.
+      Chips raised = player->Bet(amount);
       Chips inc = player->bet_info.current_bet - current_bet_;
       if (inc >= last_raise_size_) last_raise_size_ = inc;
       current_bet_ = player->bet_info.current_bet;
@@ -893,9 +920,80 @@ PlayerState* GameState::GetCurrentPlayer() {
 }
 
 int32_t GameState::GetCurrentPlayerId() const {
-  if (action_seat_ < config_.max_players) return players_[action_seat_].id;
+  // Must agree with GetCurrentPlayer(): the raw action seat can hold a player
+  // who has folded / gone all-in / already acted, in which case the real actor
+  // is found by scanning for an active, not-yet-acted player. Returning the
+  // stale seat id here would make ProcessAction reject the action ("not your
+  // turn") and strand the hand.
+  if (action_seat_ < config_.max_players) {
+    const auto& p = players_[action_seat_];
+    if (p.IsActive() && !p.acted_this_round) return p.id;
+  }
+  for (const auto& pl : players_) {
+    if (pl.IsActive() && !pl.acted_this_round) return pl.id;
+  }
   return -1;
 }
+
+void GameState::SetDeterministicDeckSeed(uint64_t seed) { deck_seed_ = seed; }
+
+bool GameState::SetPlayerChips(int32_t player_id, Chips chips) {
+  for (auto& p : players_) {
+    if (p.id == player_id && p.seat_state != SeatState::EMPTY) {
+      p.chips = chips;
+      p.seat_state = SeatState::SITTING;
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<GameAction> GameState::LegalActions(int32_t player_id) const {
+  std::vector<GameAction> actions;
+  if (!hand_started_) return actions;
+  if (action_seat_ >= config_.max_players) return actions;
+  const PlayerState& player = players_[action_seat_];
+  if (player.id != player_id || !player.IsActive()) return actions;
+
+  // Validator/min-raise take non-const pointers but treat them read-only.
+  std::vector<PlayerState*> active_ptrs;
+  for (const auto& p : players_) {
+    if (p.IsActive() || p.IsAllIn()) active_ptrs.push_back(const_cast<PlayerState*>(&p));
+  }
+
+  const int street = CurrentStreet();
+  auto make = [&](ActionType t, Chips amt) {
+    GameAction a;
+    a.type = t;
+    a.amount = amt;
+    a.player_id = player_id;
+    a.street = static_cast<int16_t>(street);
+    return a;
+  };
+
+  Chips to_call = current_bet_ - player.bet_info.current_bet;
+  if (to_call < 0) to_call = 0;
+
+  actions.push_back(make(ActionType::FOLD, 0));
+  if (to_call == 0) {
+    actions.push_back(make(ActionType::CHECK, 0));
+  } else if (player.chips > 0) {
+    actions.push_back(make(ActionType::CALL, 0));
+  }
+
+  if (player.chips > 0) {
+    MinRaiseInfo mr = ActionValidator::CalculateMinRaise(
+        player, current_bet_, GetPot(), config_.big_blind, active_ptrs, street, last_raise_size_);
+    if (!mr.is_all_in_less) {
+      actions.push_back(
+          make(current_bet_ == 0 ? ActionType::BET : ActionType::RAISE, mr.min_raise_to));
+    }
+    actions.push_back(make(ActionType::ALL_IN, 0));
+  }
+
+  return actions;
+}
+
 
 int GameState::ActivePlayerCount() const {
   int count = 0;
