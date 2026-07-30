@@ -550,4 +550,39 @@ TEST(ArenaTest, LbrIsDeterministic) {
   EXPECT_DOUBLE_EQ(r1.sample_sum, r2.sample_sum);
 }
 
+// v0.9: with betting enabled (the default), LBR value-bets on checked-to nodes
+// and provably exploits a passive CallStation — the very opponent a fold/call
+// LBR (v0.8) could not beat, since punishing over-calling requires betting. The
+// 95% CI lower bound is strictly positive: a real lower bound on the station's
+// full-game exploitability.
+TEST(ArenaTest, LbrExploitsCallStation) {
+  CallStationAgent live{AIConfig{}};
+  CallStationAgent probe{AIConfig{}};
+  LbrResult r = RunLbr(live, probe, LbrBench(250, 1));
+
+  EXPECT_TRUE(r.chips_conserved);
+  EXPECT_EQ(r.hands_played, 250);
+  ASSERT_GT(r.sample_n, 0);
+  EXPECT_GT(r.mbb_per_100 - r.ci95, 0.0);  // statistically significant exploit
+}
+
+// v0.9: betting is what closes the v0.8 CallStation gap. A fold/call-only LBR
+// (cfg.bet == false) cannot profit from a station, whereas the value-betting LBR
+// wins at a dramatically higher rate over the same deals. Both conserve chips.
+TEST(ArenaTest, LbrBettingTightensVsCallStation) {
+  auto run = [](bool bet) {
+    CallStationAgent live{AIConfig{}};
+    CallStationAgent probe{AIConfig{}};
+    LbrConfig cfg = LbrBench(250, 1);
+    cfg.bet = bet;
+    return RunLbr(live, probe, cfg);
+  };
+  LbrResult no_bet = run(false);
+  LbrResult with_bet = run(true);
+
+  EXPECT_TRUE(no_bet.chips_conserved);
+  EXPECT_TRUE(with_bet.chips_conserved);
+  EXPECT_GT(with_bet.mbb_per_100, no_bet.mbb_per_100);
+}
+
 }  // namespace
