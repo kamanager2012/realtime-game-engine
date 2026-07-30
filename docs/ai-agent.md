@@ -142,9 +142,10 @@ probing what the agent would do with each hypothetical villain hand.
 ./build/cli/agent_bench --exploitability --a cfr --cfr-model data/bot_policy.cfr --hands 4000 --seed 1
 ```
 
-This LBR value-bets on checked-to nodes and folds/calls (never re-raises) when
-facing a bet, so it still *underestimates* (a lower bound) but now exploits both
-a passive `callstation` (value betting) and an over-aggressive `maniac`. See
+This LBR value-bets on checked-to nodes and also **re-raises when facing a bet**
+whenever an EV estimate beats calling (otherwise it folds/calls by pot odds), so
+it still *underestimates* (a lower bound) but now exploits both a passive
+`callstation` (value betting) and an over-aggressive `maniac`. See
 **[ai-research.md](ai-research.md)** for the method and its guarantees.
 
 ## Honest boundaries
@@ -159,9 +160,10 @@ a passive `callstation` (value betting) and an over-aggressive `maniac`. See
   variate).
 - **Exploitability is an LBR lower bound.** `--exploitability` reports a live LBR
   *lower bound* in the full NLHE game (real value `>=` shown). LBR bets on
-  checked-to nodes but never re-raises when facing a bet, which loosens the bound.
-  A trained `.cfr` model separately carries a training-time, abstraction-level
-  figure in its header (a different, non-live quantity), shown as a footnote for
-  `cfr`.
+  checked-to nodes and re-raises facing a bet by EV; because it uses only a few
+  candidate sizes and no recursive re-raise expansion, the bound stays loose (an
+  underestimate). A trained `.cfr` model separately carries a training-time,
+  abstraction-level figure in its header (a different, non-live quantity), shown
+  as a footnote for `cfr`.
 
 See **[ai-research.md](ai-research.md)** for the full methodology.

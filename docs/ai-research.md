@@ -198,15 +198,19 @@ model and bet-sizing EV only affect tightness, not validity.
 Honest boundaries of this estimate:
 
 - **It is a lower bound, not the exact value or an upper bound.** LBR
-  value-/bluff-bets on **checked-to nodes** (`to_call == 0`), sizing its bet by
-  the counterfactually probed fold probability and its equity vs the non-folding
-  range; when **facing a bet** it only folds/calls by pot odds (it never
-  re-raises). Because it explores only this restricted action set, it still
-  *underestimates* exploitability — a fuller responder would prove a tighter bound.
-- Betting is what lets LBR **punish over-calling**: it now provably exploits a
+  value-/bluff-bets on **checked-to nodes** (`to_call == 0`) and, when **facing a
+  bet**, additionally **re-raises** whenever an EV estimate (the counterfactually
+  probed fold probability and its equity vs the non-folding range) beats calling —
+  otherwise it folds/calls by pot odds. Because it still explores only a restricted
+  action set (two candidate sizes; villain re-raises are treated as a call-then-
+  checkdown in the EV heuristic, with no recursive re-raise expansion), it remains
+  a valid *underestimate* of exploitability — a fuller responder would prove a
+  tighter bound.
+- Betting is what lets LBR **punish over-calling**: it provably exploits a
   passive **CallStation** (value betting its made hands), the opponent the earlier
-  fold/call-only variant could not beat. It likewise crushes an over-aggressive
-  **Maniac** by calling correctly and folding trash at pot odds.
+  fold/call-only variant could not beat. Re-raising facing a bet then extracts
+  even more from opponents that bet a lot, tightening the bound further; it also
+  crushes an over-aggressive **Maniac** by calling correctly and folding trash.
 - It is measured in the **full NLHE game** (not a CFR abstraction), and is
   deterministic for a fixed `--seed` (and `--threads`).
 
