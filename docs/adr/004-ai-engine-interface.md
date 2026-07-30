@@ -40,10 +40,13 @@ struct AIConfig {
 };
 
 struct DecisionRequest {
-    GameStateView state;         // 只读游戏状态视图
+    Observation observation;     // 脱敏的每玩家观测（仅含自己底牌）
     PlayerId player_id;          // 需要决策的玩家
     std::vector<Action> legal_actions;  // 当前合法行动列表
 };
+// 注：observation 由 GameState::ObserveFor(viewer_id) 构造，只含公共状态 +
+// 观察者自己的底牌；对手以 PlayerView 出现（无 hole_cards 字段），Agent 在类型
+// 上无法窥探隐藏信息。OnHandComplete 仍收到完整 GameState（手末摊牌信息，公开）。
 
 struct DecisionResponse {
     ActionType action;           // fold / check / call / bet / raise / all_in

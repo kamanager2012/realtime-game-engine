@@ -171,7 +171,8 @@ The engine doubles as a **reproducible research environment for
 imperfect-information, multi-agent decision making**. Agents implement a single
 interface (`IAIEngine::Decide`) and are evaluated on the real game — exact
 side-pot settlement, provably-fair dealing, integer chip accounting — not a toy
-abstraction.
+abstraction. `Decide` receives a **redacted per-player `Observation`**: opponents'
+hole cards are not exposed at the type level, only the viewer's own cards.
 
 `agent_bench` runs headless bot-vs-bot matches and reports a win rate (mbb/100)
 with a 95% confidence interval, asserting chip conservation every hand:

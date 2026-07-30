@@ -23,17 +23,22 @@ class IAIEngine {
 };
 ```
 
-`Decide` receives a `DecisionRequest { const GameState& state; int32_t player_id;
-std::vector<GameAction> legal_actions; }` and returns a `GameAction`. The match
-runner supplies `legal_actions` from `GameState::LegalActions(player_id)`, whose
-every entry is guaranteed to pass `ActionValidator::Validate`.
+`Decide` receives a `DecisionRequest { game::Observation observation; int32_t
+player_id; std::vector<GameAction> legal_actions; }` and returns a `GameAction`.
+The `Observation` is a **redacted, per-player view**: it carries public table
+state plus *only the viewer's own hole cards*. Opponents appear as `PlayerView`,
+a struct that has no `hole_cards` field at all — so an agent cannot peek at
+hidden information through the type system. The match runner supplies
+`legal_actions` from `GameState::LegalActions(player_id)`, whose every entry is
+guaranteed to pass `ActionValidator::Validate`.
 
 ### How to add an agent (3 steps)
 
 1. Subclass `IAIEngine` and implement `Decide` — return a `GameAction`. Read
-   `request.legal_actions` (or call `request.state.LegalActions(id)`) and pick
-   one; for bets/raises set `amount` (in **cents**) between the minimum legal
-   size and all-in.
+   `request.observation` (your own cards via `observation.MyHoleCards()`, your
+   stack/bet via `observation.Me()`, the board via `observation.community`) and
+   `request.legal_actions`; pick one, and for bets/raises set `amount` (in
+   **cents**) between the minimum legal size and all-in.
 2. Seed any RNG from `AIConfig::random_seed` so runs are reproducible.
 3. Drop it into a match with `RunHeadsUp(agentA, agentB, MatchConfig{...})`.
 
@@ -134,10 +139,13 @@ opponent.
 
 ## Honest limitations
 
-- **Full state visibility.** `DecisionRequest` currently exposes the entire
-  `GameState`, including opponents' hole cards. This is fine for self-play and
-  offline evaluation but is **not** an anti-collusion online API. A redacted
-  per-player observation is deliberate future work.
+- **Redacted per-player observation.** `Decide` receives a `game::Observation`
+  built by `GameState::ObserveFor(viewer_id)`: public table state plus only the
+  viewer's own hole cards. Opponents' cards are not representable in the type, so
+  an agent cannot read them. `OnHandComplete(const GameState&)` still hands over
+  the full end-of-hand state — that is showdown information, which is public once
+  the hand is over. (The trusted server and CFR *training* self-play still work
+  directly on `GameState`; only the agent-facing `Decide` seam is redacted.)
 - **Duplicate, not AIVAT.** `--duplicate` cancels the luck of *which seat was
   dealt which cards*, but does not yet subtract a learned control variate on the
   community runout; full AIVAT-style variance reduction is future work.
