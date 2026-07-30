@@ -50,11 +50,16 @@ uniform over the legal set.
 | Agent | What it is | Role |
 |-------|------------|------|
 | `RandomAgent` | uniform over legal actions | honest lower bound / floor |
+| `CallStationAgent` | never bets/raises; checks/calls, folds only when forced | exploitable baseline (pays off, never bluffs) |
+| `ManiacAgent` | maximum aggression; shoves all-in whenever legal | exploitable baseline (trap it) |
 | `AIEngine` (RuleBased) | hand-strength + pot-odds heuristics | scripted baseline |
 | `AIEngine` (CfrModel) | CFR policy over a 169-bucket abstraction | solver baseline |
 
-A meaningful agent must beat `RandomAgent` with statistical significance; a
-strong one should also beat the rule-based baseline.
+`CallStationAgent` and `ManiacAgent` read only the legal action set (no hole
+cards, no RNG — fully deterministic), so they are honest, reproducible sparring
+partners. A meaningful agent must beat `RandomAgent` with statistical
+significance and should crush the call-station and maniac; a strong one should
+also beat the rule-based baseline.
 
 ## The benchmark: `agent_bench`
 
@@ -79,6 +84,9 @@ confidence interval:
 
 # Multi-way (N-way) table
 ./build/cli/agent_bench --agents random,rule,random --hands 20000 --seed 1
+
+# Round-robin leaderboard across a field of agents
+./build/cli/agent_bench --roundrobin --agents random,callstation,maniac,rule --hands 4000 --seed 1
 
 # Parallel throughput (independent seed shards, pooled)
 ./build/cli/agent_bench --a random --b random --hands 1000000 --threads 8
@@ -146,6 +154,18 @@ for N-way tables it is ignored (reported as `no`).
 the real engine — full side-pot settlement applies. `--agents a,b,c,...` selects
 the line-up; agent 0 is the one whose mbb/100 is reported. Chip conservation is
 asserted every hand for any number of seats.
+
+### Round-robin leaderboard
+
+`--roundrobin` plays every unordered pair of `--agents` heads-up and prints a
+mbb/100 matrix plus a ranked leaderboard. Because heads-up NLHE is zero-sum, each
+pair is played **once**: the reported per-hand sample belongs to agent 0, and the
+opponent's is its exact negation, so the matrix is antisymmetric by construction.
+Each agent's samples are then pooled across all its opponents (using `n, Σx, Σx²`,
+negating `Σx` for the matches where it sat as agent 1) to produce a global
+mbb/100 ± CI. Every variance-reduction and throughput flag (`--duplicate`,
+`--aivat`, `--threads`) applies to each pairing; results are deterministic for a
+fixed `--seed` and `--threads`.
 
 ### Parallel throughput
 

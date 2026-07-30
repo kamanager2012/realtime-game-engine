@@ -21,6 +21,7 @@ honest statistical boundaries, see **[ai-research.md](ai-research.md)**.
 | A standard agent interface | `network::IAIEngine` (`Decide(DecisionRequest) → DecisionResponse`) |
 | Multi-agent play | `arena::RunMatch(std::vector<IAIEngine*>, cfg)` — 2..N seats on the real engine |
 | Reproducible evaluation | `agent_bench`: mbb/100 + 95% CI, chip-conservation asserted every hand |
+| Ready-made opponents | baseline agents (`random`, `callstation`, `maniac`, `rule`, `cfr`) + a round-robin leaderboard |
 | Variance reduction | duplicate (seat-rotation) pairing + per-street runout EV adjustment (`--duplicate`, `--aivat`) |
 | A solver reference point | CFR policy baseline + abstraction-level exploitability |
 
@@ -96,6 +97,38 @@ Two references live in-tree:
 - **mbb/100** — milli-big-blinds per 100 hands, the stake-independent win rate.
 - **95% CI** — an edge is credible when `mbb/100 − CI > 0`.
 - Every hand asserts **chip conservation** (`Σ net == 0`).
+
+## Baseline agents
+
+Five honest opponents ship in-tree so a new agent has something to beat out of
+the box. `callstation` and `maniac` are the classic *exploitable* sparring
+partners: they read only the legal action set (no hole cards, no RNG — fully
+deterministic), so any competent agent should crush them.
+
+| kind | strategy | known weakness |
+|---|---|---|
+| `random` | uniform over legal actions | no strategy at all — the floor |
+| `callstation` | never bets/raises; checks or calls, folds only when it must | pay it off; it never bluffs and never folds |
+| `maniac` | maximum aggression; shoves all-in whenever it can | trap with strong hands, fold junk |
+| `rule` | hand-strength heuristics (`AIEngine` RuleBased) | static, no board-texture nuance |
+| `cfr` | trained CFR policy (needs `--cfr-model`) | abstraction-level, not full-game GTO |
+
+## Round-robin leaderboard
+
+`--roundrobin` plays every pair of `--agents` and prints a mbb/100 matrix plus a
+ranked leaderboard. Because heads-up is zero-sum, each pair is played once and
+both sides are read off the same match (agent B's rate is the negation of agent
+A's), then each agent's samples are pooled across all its opponents for a global
+mbb/100 ± CI.
+
+```bash
+./build/cli/agent_bench --roundrobin \
+    --agents random,callstation,maniac,rule --hands 4000 --seed 1
+```
+
+All the variance-reduction and throughput flags (`--duplicate`, `--aivat`,
+`--threads`) apply to every pairing. Results are deterministic for a fixed
+`--seed` **and** a fixed `--threads`.
 
 ## Honest boundaries
 

@@ -43,6 +43,7 @@ agent contract, a 3-step guide, and reproducible evaluation. The one-liner:
 | A standard agent interface | `network::IAIEngine` (`Decide(DecisionRequest) → DecisionResponse`) |
 | Multi-agent play | `arena::RunMatch(std::vector<IAIEngine*>, cfg)` — 2..N seats |
 | Reproducible evaluation | `agent_bench`: mbb/100 + 95% CI, chip conservation asserted every hand |
+| Ready-made opponents | baselines (`random`, `callstation`, `maniac`, `rule`, `cfr`) + a `--roundrobin` leaderboard |
 | Variance reduction | duplicate seat rotation (`--duplicate`) + per-street runout EV adjustment (`--aivat`) |
 | A solver reference point | CFR baseline + abstraction-level exploitability |
 
@@ -220,9 +221,14 @@ with a 95% confidence interval, asserting chip conservation every hand:
 # N-way (>2) match, parallelized across threads for throughput
 ./build/cli/agent_bench --agents random,rule,cfr --hands 20000 --threads 8 \
     --cfr-model data/bot_policy.cfr
+
+# round-robin: play every pair and print a mbb/100 leaderboard
+./build/cli/agent_bench --roundrobin --agents random,callstation,maniac,rule --hands 4000 --seed 1
 ```
 
-Baselines: `RandomAgent` (honest floor), rule-based, and a CFR solver policy.
+Baselines ship in-tree: `random` (honest floor), `callstation` and `maniac` (the
+classic exploitable sparring partners — deterministic, no hidden info), plus the
+rule-based heuristic and a CFR solver policy.
 For a get-started guide, see **[docs/ai-agent.md](docs/ai-agent.md)** (agent
 contract + 3-step guide); for metrics and methodology see
 **[docs/ai-research.md](docs/ai-research.md)**. A real, optional **LLM agent**
