@@ -180,7 +180,7 @@ independent match per thread. Results are deterministic for a fixed `--seed`
 
 ```bash
 # Any black-box agent; larger mbb/100 = more exploitable.
-./build/cli/agent_bench --exploitability --a maniac --hands 1500 --seed 1
+./build/cli/agent_bench --exploitability --a callstation --hands 250 --seed 1
 ./build/cli/agent_bench --exploitability --a cfr --cfr-model data/bot_policy.cfr --hands 4000 --seed 1
 ```
 
@@ -193,17 +193,20 @@ instance of the same agent what it would do with each hypothetical villain
 hole-card combo, then Bayes-filters its belief over the villain's range by
 consistency with the observed action. The key correctness property: **the
 measured win rate is a valid lower bound for any legal LBR policy** — the belief
-model only affects tightness, not validity.
+model and bet-sizing EV only affect tightness, not validity.
 
 Honest boundaries of this estimate:
 
-- **It is a lower bound, not the exact value or an upper bound.** This LBR
-  variant is restricted to **fold / call-check** (it never bets or raises), the
-  simplest valid form, so it *underestimates* exploitability. A responder that
-  bets would prove a tighter (larger) bound.
-- Because it never bets, LBR **cannot punish a passive CallStation** (exploiting
-  over-calling requires value betting) — expect ~0 there. It **does** crush an
-  over-aggressive Maniac by calling correctly and folding trash at pot odds.
+- **It is a lower bound, not the exact value or an upper bound.** LBR
+  value-/bluff-bets on **checked-to nodes** (`to_call == 0`), sizing its bet by
+  the counterfactually probed fold probability and its equity vs the non-folding
+  range; when **facing a bet** it only folds/calls by pot odds (it never
+  re-raises). Because it explores only this restricted action set, it still
+  *underestimates* exploitability — a fuller responder would prove a tighter bound.
+- Betting is what lets LBR **punish over-calling**: it now provably exploits a
+  passive **CallStation** (value betting its made hands), the opponent the earlier
+  fold/call-only variant could not beat. It likewise crushes an over-aggressive
+  **Maniac** by calling correctly and folding trash at pot odds.
 - It is measured in the **full NLHE game** (not a CFR abstraction), and is
   deterministic for a fixed `--seed` (and `--threads`).
 

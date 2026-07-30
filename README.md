@@ -225,8 +225,8 @@ with a 95% confidence interval, asserting chip conservation every hand:
 # round-robin: play every pair and print a mbb/100 leaderboard
 ./build/cli/agent_bench --roundrobin --agents random,callstation,maniac,rule --hands 4000 --seed 1
 
-# live LBR exploitability lower bound for any agent (larger = more exploitable)
-./build/cli/agent_bench --exploitability --a maniac --hands 1500 --seed 1
+# live LBR exploitability lower bound (LBR bets checked-to nodes; larger = more exploitable)
+./build/cli/agent_bench --exploitability --a callstation --hands 250 --seed 1
 ```
 
 Baselines ship in-tree: `random` (honest floor), `callstation` and `maniac` (the

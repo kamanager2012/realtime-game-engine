@@ -138,13 +138,14 @@ exploitability (larger = more exploitable). It works on any black-box agent by
 probing what the agent would do with each hypothetical villain hand.
 
 ```bash
-./build/cli/agent_bench --exploitability --a maniac --hands 1500 --seed 1
+./build/cli/agent_bench --exploitability --a callstation --hands 250 --seed 1
 ./build/cli/agent_bench --exploitability --a cfr --cfr-model data/bot_policy.cfr --hands 4000 --seed 1
 ```
 
-This LBR is restricted to fold/call (never bets), so it underestimates: it
-crushes an over-aggressive `maniac` but cannot punish a passive `callstation`
-(≈0). See **[ai-research.md](ai-research.md)** for the method and its guarantees.
+This LBR value-bets on checked-to nodes and folds/calls (never re-raises) when
+facing a bet, so it still *underestimates* (a lower bound) but now exploits both
+a passive `callstation` (value betting) and an over-aggressive `maniac`. See
+**[ai-research.md](ai-research.md)** for the method and its guarantees.
 
 ## Honest boundaries
 
@@ -156,10 +157,11 @@ crushes an over-aggressive `maniac` but cannot punish a passive `callstation`
   (any-street all-in, incl. caller-behind). This is **not** full AIVAT (no
   action / imaginary-observations term; pots decided purely by betting get no
   variate).
-- **Exploitability is a fold/call LBR lower bound.** `--exploitability` reports a
-  live LBR *lower bound* in the full NLHE game (real value `>=` shown; a
-  non-betting LBR loosens it). A trained `.cfr` model separately carries a
-  training-time, abstraction-level figure in its header (a different, non-live
-  quantity), shown as a footnote for `cfr`.
+- **Exploitability is an LBR lower bound.** `--exploitability` reports a live LBR
+  *lower bound* in the full NLHE game (real value `>=` shown). LBR bets on
+  checked-to nodes but never re-raises when facing a bet, which loosens the bound.
+  A trained `.cfr` model separately carries a training-time, abstraction-level
+  figure in its header (a different, non-live quantity), shown as a footnote for
+  `cfr`.
 
 See **[ai-research.md](ai-research.md)** for the full methodology.
