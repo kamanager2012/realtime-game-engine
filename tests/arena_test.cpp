@@ -2,6 +2,11 @@
 // determinism, and baseline separation.
 #include <gtest/gtest.h>
 
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "poker_engine/arena/baseline_agents.h"
 #include "poker_engine/arena/match_runner.h"
 #include "poker_engine/arena/random_agent.h"
 #include "poker_engine/game/action_validator.h"
@@ -10,6 +15,8 @@
 
 namespace {
 
+using poker_engine::arena::CallStationAgent;
+using poker_engine::arena::ManiacAgent;
 using poker_engine::arena::MatchConfig;
 using poker_engine::arena::MatchResult;
 using poker_engine::arena::RandomAgent;
@@ -25,6 +32,7 @@ using poker_engine::game::TableConfig;
 using poker_engine::network::AIConfig;
 using poker_engine::network::AIStrategyType;
 using poker_engine::network::CreateAIEngine;
+using poker_engine::network::IAIEngine;
 
 TableConfig SmallTable() {
   TableConfig t;
@@ -367,6 +375,134 @@ TEST(ArenaTest, AivatPerStreetCoversCallerBehind) {
   EXPECT_EQ(r.net_by_seat[0] + r.net_by_seat[1], 0);
   EXPECT_LT(std::abs(r.mbb_per_100 - raw.mbb_per_100), raw.ci95 + r.ci95)
       << "aivat mbb=" << r.mbb_per_100 << " raw mbb=" << raw.mbb_per_100;
+}
+
+// --- Baseline agents (honest, deterministic sparring partners) ---
+
+// Build a one-seat Observation for the viewer with the given stack so that a
+// Maniac's all-in sizing has a chip ceiling to clamp to.
+poker_engine::game::Observation ViewerObs(int32_t id, Chips chips, Chips current_bet) {
+  poker_engine::game::Observation obs;
+  obs.viewer_id = id;
+  poker_engine::game::PlayerView pv;
+  pv.id = id;
+  pv.chips = chips;
+  pv.bet_info.current_bet = current_bet;
+  obs.players.push_back(pv);
+  return obs;
+}
+
+GameAction MakeAction(ActionType type, Chips amount = 0) {
+  GameAction a;
+  a.type = type;
+  a.amount = amount;
+  return a;
+}
+
+// CallStation must never choose BET/RAISE, and must prefer CHECK > CALL > FOLD.
+TEST(ArenaTest, CallStationNeverRaises) {
+  CallStationAgent agent{AIConfig{}};
+  auto obs = ViewerObs(1, 5000, 200);
+
+  // Full menu: check available => check (free), never bet/raise.
+  {
+    std::vector<GameAction> legal = {MakeAction(ActionType::FOLD), MakeAction(ActionType::CHECK),
+                                     MakeAction(ActionType::BET, 100),
+                                     MakeAction(ActionType::RAISE, 400)};
+    GameAction act = agent.Decide({obs, 1, legal}).action;
+    EXPECT_EQ(act.type, ActionType::CHECK);
+  }
+  // No check but facing a bet: call rather than fold.
+  {
+    std::vector<GameAction> legal = {MakeAction(ActionType::FOLD), MakeAction(ActionType::CALL, 200),
+                                     MakeAction(ActionType::RAISE, 400)};
+    GameAction act = agent.Decide({obs, 1, legal}).action;
+    EXPECT_EQ(act.type, ActionType::CALL);
+  }
+  // Only fold is legal: fold.
+  {
+    std::vector<GameAction> legal = {MakeAction(ActionType::FOLD)};
+    GameAction act = agent.Decide({obs, 1, legal}).action;
+    EXPECT_EQ(act.type, ActionType::FOLD);
+  }
+}
+
+// Maniac must prefer RAISE > BET and shove to all-in (stack + current bet).
+TEST(ArenaTest, ManiacPrefersAggression) {
+  ManiacAgent agent{AIConfig{}};
+  auto obs = ViewerObs(1, 5000, 200);
+  const Chips all_in = 5000 + 200;
+
+  {
+    std::vector<GameAction> legal = {MakeAction(ActionType::FOLD), MakeAction(ActionType::CHECK),
+                                     MakeAction(ActionType::BET, 100),
+                                     MakeAction(ActionType::RAISE, 400)};
+    GameAction act = agent.Decide({obs, 1, legal}).action;
+    EXPECT_EQ(act.type, ActionType::RAISE);
+    EXPECT_EQ(act.amount, all_in);
+  }
+  // No raise available: bet, sized all-in.
+  {
+    std::vector<GameAction> legal = {MakeAction(ActionType::FOLD), MakeAction(ActionType::CHECK),
+                                     MakeAction(ActionType::BET, 100)};
+    GameAction act = agent.Decide({obs, 1, legal}).action;
+    EXPECT_EQ(act.type, ActionType::BET);
+    EXPECT_EQ(act.amount, all_in);
+  }
+  // No aggression available: call.
+  {
+    std::vector<GameAction> legal = {MakeAction(ActionType::FOLD), MakeAction(ActionType::CALL, 200)};
+    GameAction act = agent.Decide({obs, 1, legal}).action;
+    EXPECT_EQ(act.type, ActionType::CALL);
+  }
+}
+
+// The round-robin leaderboard derives agent 1's win rate by negating agent 0's
+// per-hand sample (heads-up is zero-sum). Validate both the stat-pooling formula
+// and that negation, plus per-pair chip conservation, over the baseline set.
+TEST(ArenaTest, RoundRobinIsAntisymmetricAndConserves) {
+  AIConfig cr;
+  cr.random_seed = 22;
+  auto make_agent = [](const std::string& kind, int seed) -> std::shared_ptr<IAIEngine> {
+    AIConfig c;
+    c.random_seed = seed;
+    if (kind == "random") return std::make_shared<RandomAgent>(c);
+    if (kind == "call") return std::make_shared<CallStationAgent>(c);
+    return std::make_shared<ManiacAgent>(c);
+  };
+  const std::vector<std::string> kinds = {"random", "call", "maniac"};
+
+  for (size_t i = 0; i < kinds.size(); ++i) {
+    for (size_t j = i + 1; j < kinds.size(); ++j) {
+      auto a = make_agent(kinds[i], 1);
+      auto b = make_agent(kinds[j], 2);
+      MatchResult r = RunHeadsUp(*a, *b, BenchConfig(400, 900 + i * 10 + j));
+      EXPECT_TRUE(r.chips_conserved) << kinds[i] << " vs " << kinds[j];
+      ASSERT_EQ(r.net_by_seat.size(), 2u);
+      EXPECT_EQ(r.net_by_seat[0] + r.net_by_seat[1], 0);
+      ASSERT_GT(r.sample_n, 0);
+
+      const double a0 = r.sample_sum / static_cast<double>(r.sample_n) * 100.0;
+      const double a1 = -r.sample_sum / static_cast<double>(r.sample_n) * 100.0;
+      EXPECT_NEAR(a0, r.mbb_per_100, 1e-6);
+      EXPECT_DOUBLE_EQ(a1, -r.mbb_per_100);  // matrix negation identity
+    }
+  }
+}
+
+// Baseline matches (with the new agents) must reproduce exactly for a fixed seed.
+TEST(ArenaTest, RoundRobinIsDeterministic) {
+  auto run = []() {
+    CallStationAgent a{AIConfig{}};
+    ManiacAgent b{AIConfig{}};
+    return RunHeadsUp(a, b, BenchConfig(300, 4242));
+  };
+  MatchResult r1 = run();
+  MatchResult r2 = run();
+  EXPECT_EQ(r1.net_by_seat, r2.net_by_seat);
+  EXPECT_EQ(r1.hands_played, r2.hands_played);
+  EXPECT_DOUBLE_EQ(r1.mbb_per_100, r2.mbb_per_100);
+  EXPECT_DOUBLE_EQ(r1.ci95, r2.ci95);
 }
 
 }  // namespace
