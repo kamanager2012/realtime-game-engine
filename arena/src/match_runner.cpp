@@ -5,14 +5,19 @@
 #include <functional>
 #include <string>
 
+#include "poker_engine/equity/equity_calculator.h"
 #include "poker_engine/game/action.h"
 #include "poker_engine/game/player_state.h"
+#include "poker_engine/range/hand_id.h"
+#include "poker_engine/range/range.h"
 
 namespace poker_engine::arena {
 
 using poker_engine::game::ActionType;
 using poker_engine::game::Chips;
+using poker_engine::game::CommunityCards;
 using poker_engine::game::GameAction;
+using poker_engine::game::GameEvent;
 using poker_engine::game::GameState;
 using poker_engine::game::PlayerState;
 using poker_engine::network::DecisionRequest;
@@ -26,6 +31,36 @@ Chips ChipsOf(const GameState& state, int32_t id) {
     if (p.id == id) return p.chips;
   }
   return 0;
+}
+
+// Per-hand snapshot captured (via the game's EventCallback) at the moment a
+// heads-up all-in triggers the community runout — BEFORE DoShowdown deals the
+// remaining board and settles the pot. Records the pre-runout board and both
+// all-in players' hole cards and total investment so the runner can replace the
+// stochastic pot award with the exact equity-weighted expectation.
+struct AllInLock {
+  bool locked = false;
+  CommunityCards prev_board;  // last normal-street board = pre-runout board
+  CommunityCards pre_board;    // board frozen at the runout instant
+  int32_t ids[2] = {0, 0};
+  uint8_t c1[2] = {0, 0}, c2[2] = {0, 0};
+  Chips inv[2] = {0, 0};
+};
+
+// Agent-0 heads-up equity of (c1a,c2a) vs (c1b,c2b) on `board`. Flop/turn (>=3
+// cards) enumerate the remaining runout exactly; preflop uses a fixed-seed
+// Monte Carlo (deterministic, internal seed 42) so results stay reproducible.
+double HeadsUpEquity(uint8_t c1a, uint8_t c2a, uint8_t c1b, uint8_t c2b,
+                     const CommunityCards& board) {
+  poker_engine::range::Range ra, rb;
+  ra.Set(poker_engine::range::HandId::Encode(c1a, c2a), 1.0f);
+  rb.Set(poker_engine::range::HandId::Encode(c1b, c2b), 1.0f);
+  uint8_t b[5] = {0, 0, 0, 0, 0};
+  const int bs = board.count;
+  for (int i = 0; i < bs; ++i) b[i] = board.cards[i];
+  const int samples = bs >= 3 ? -1 : 20000;
+  const auto eq = poker_engine::equity::EquityCalculator::CalculateExact(ra, rb, b, bs, samples);
+  return static_cast<double>(eq.equity[0]);
 }
 
 // A safe legal action when an agent proposes something illegal: prefer the
@@ -140,6 +175,8 @@ MatchResult RunMatch(const std::vector<IAIEngine*>& agents, const MatchConfig& c
   const int H = config.hands;
   result.reps = reps;
   result.variance_reduced = config.duplicate;
+  const bool aivat_on = config.aivat && k == 2;
+  result.aivat_applied = aivat_on;
 
   // For duplicate mode we must pair agent 0's per-hand result across rotations,
   // so keep a per-rep array; independent mode only needs running moments.
@@ -166,7 +203,46 @@ MatchResult RunMatch(const std::vector<IAIEngine*>& agents, const MatchConfig& c
     const int seat_of_a0 = (k - (r % k)) % k;
     const int32_t id_of_a0 = seat_of_a0 + 1;
 
+    // AIVAT: intercept the all-in community runout the instant it is dealt (the
+    // engine runs the board out and settles synchronously inside ProcessAction,
+    // so the runner loop cannot see the pre-runout board afterward).
+    AllInLock lock;
+    if (aivat_on) {
+      state.SetCallback([&state, &lock](const GameEvent& ev) {
+        if (ev.type != GameEvent::COMMUNITY_DEALT) return;
+        int active_not_allin = 0, not_folded = 0;
+        for (const auto& p : state.AllPlayers()) {
+          if (p.IsActive()) {
+            ++active_not_allin;
+            ++not_folded;
+          } else if (p.IsAllIn()) {
+            ++not_folded;
+          }
+        }
+        if (active_not_allin == 0 && not_folded == 2) {
+          // Heads-up all-in runout: freeze the pre-runout board + both hands.
+          lock.locked = true;
+          lock.pre_board = lock.prev_board;
+          int s = 0;
+          for (const auto& p : state.AllPlayers()) {
+            if (!p.IsActive() && !p.IsAllIn()) continue;
+            if (s < 2) {
+              lock.ids[s] = p.id;
+              lock.c1[s] = p.hole_cards.card1();
+              lock.c2[s] = p.hole_cards.card2();
+              lock.inv[s] = p.bet_info.total_invested;
+              ++s;
+            }
+          }
+        } else {
+          // Normal street deal: remember this board as the pre-runout snapshot.
+          lock.prev_board = state.GetCommunity();
+        }
+      });
+    }
+
     for (int h = 0; h < H; ++h) {
+      if (aivat_on) lock = AllInLock{};
       if (!PlayOneHand(state, k, agent_for)) break;
 
       for (auto* ag : agents) ag->OnHandComplete(state);
@@ -183,7 +259,19 @@ MatchResult RunMatch(const std::vector<IAIEngine*>& agents, const MatchConfig& c
       }
       if (hand_sum != 0) result.chips_conserved = false;
 
-      const double x = static_cast<double>(a0_net) / static_cast<double>(bb) * 1000.0;  // mbb
+      double x;
+      if (aivat_on && lock.locked && lock.pre_board.count < 5) {
+        const int a0slot = (lock.ids[0] == id_of_a0) ? 0 : 1;
+        const int vslot = 1 - a0slot;
+        const Chips m = std::min(lock.inv[a0slot], lock.inv[vslot]);
+        const double e0 = HeadsUpEquity(lock.c1[a0slot], lock.c2[a0slot], lock.c1[vslot],
+                                        lock.c2[vslot], lock.pre_board);
+        const double ev_net_a0 = static_cast<double>(m) * (2.0 * e0 - 1.0);
+        x = ev_net_a0 / static_cast<double>(bb) * 1000.0;  // mbb (EV-adjusted)
+        ++result.adjusted_hands;
+      } else {
+        x = static_cast<double>(a0_net) / static_cast<double>(bb) * 1000.0;  // mbb
+      }
       if (reps > 1) {
         a0_mbb[r][h] = x;
       } else {

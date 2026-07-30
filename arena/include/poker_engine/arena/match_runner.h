@@ -21,6 +21,12 @@ struct MatchConfig {
   // occupies which seat, so every agent plays every seat on identical cards.
   // The deal luck cancels in agent 0's cross-rotation sum, shrinking the CI.
   bool duplicate = false;
+  // All-in EV adjustment (AIVAT-lite): for heads-up all-in showdowns, replace
+  // the stochastic pot award with the exact equity-weighted expectation
+  // m*(2e-1) on the pre-runout board, an unbiased chance control variate that
+  // removes community-runout variance. Only applies when k == 2 (heads-up
+  // NLHE); ignored for N-way. net_by_seat still records realized chips.
+  bool aivat = false;
 };
 
 // Result of a match. All chip figures are in cents (Chips).
@@ -35,6 +41,9 @@ struct MatchResult {
   double big_blind = 0.0;       // in chips (cents), for reporting
   int reps = 1;                 // 1 for independent, = num agents for duplicate
   bool variance_reduced = false;
+  // All-in EV adjustment reporting (see MatchConfig::aivat).
+  bool aivat_applied = false;      // true when aivat requested and k == 2
+  long long adjusted_hands = 0;    // hands whose mbb sample used the EV value
 
   // Sufficient statistics on agent 0's per-hand-equivalent mbb sample, exposed
   // so callers (e.g. a multi-threaded benchmark) can pool shards and recompute

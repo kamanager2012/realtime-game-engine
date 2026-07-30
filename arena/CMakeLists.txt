@@ -19,12 +19,14 @@ target_include_directories(arena
         ${CMAKE_SOURCE_DIR}/phase12/include
         ${CMAKE_SOURCE_DIR}/phase13/include
         ${CMAKE_SOURCE_DIR}/phase15/include
+        ${CMAKE_SOURCE_DIR}/equity/include
 )
 
 target_link_libraries(arena
     PUBLIC
         phase13
         phase12
+        equity
     PRIVATE
         Threads::Threads
 )
