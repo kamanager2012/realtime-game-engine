@@ -25,6 +25,11 @@ class CfrPolicyStore {
   std::optional<poker_engine::game::GameAction> SampleAction(
       const poker_engine::game::GameState& state, int32_t player_id, std::mt19937& rng) const;
 
+  // Observation path: same sampling logic, but keyed off the redacted per-player
+  // Observation (viewer_id identifies the actor). Used by the live agent seam.
+  std::optional<poker_engine::game::GameAction> SampleAction(
+      const poker_engine::game::Observation& obs, std::mt19937& rng) const;
+
  private:
   CfrPolicyStore() = default;
 

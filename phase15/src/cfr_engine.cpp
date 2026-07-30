@@ -303,6 +303,24 @@ std::vector<std::pair<Action, double>> CFREngine::GetStrategyForState(const game
   return result;
 }
 
+std::vector<std::pair<Action, double>> CFREngine::GetStrategyForState(const game::Observation& obs,
+                                                                     int player) const {
+  InfosetKey key = ComputeInfosetKey(obs, player);
+  std::vector<std::pair<Action, double>> result;
+  const CFRNode* node = GetNode(key);
+  if (!node) {
+    for (int a = 0; a < action_count(); ++a)
+      result.emplace_back(static_cast<Action>(a), 1.0 / action_count());
+    return result;
+  }
+  double avg[CFRNode::kMaxActions];
+  const_cast<CFRNode*>(node)->get_average_strategy(avg);
+  for (int a = 0; a < action_count(); ++a) {
+    if (avg[a] > 0.001) result.emplace_back(static_cast<Action>(a), avg[a]);
+  }
+  return result;
+}
+
 std::vector<std::pair<Action, double>> CFREngine::GetStrategy(const InfosetKey& key) {
   std::vector<std::pair<Action, double>> result;
   const CFRNode* node = GetNode(key);
@@ -321,36 +339,54 @@ std::vector<std::pair<Action, double>> CFREngine::GetStrategy(const InfosetKey& 
   return result;
 }
 
-InfosetKey CFREngine::ComputeInfosetKey(const game::GameState& state, int player,
-                                        const HandAbstraction& abstraction) const {
+InfosetKey CFREngine::ComputeInfosetKeyFromParts(const game::HoleCards& own, game::GamePhase phase,
+                                                 double pot, double current_bet, uint8_t seat,
+                                                 const HandAbstraction& abstraction) const {
   InfosetKey key;
 
-  // Use AllPlayers() to find the player by id, since GameState has no GetPlayer(int) method
   uint16_t bucket = 0;
-  for (const auto& p : state.AllPlayers()) {
-    if (p.id == static_cast<int32_t>(player) && p.hole_cards.IsDealt()) {
-      HoleCards hc;
-      hc.c1 = p.hole_cards.card1();
-      hc.c2 = p.hole_cards.card2();
-      bucket = abstraction.get_bucket(hc);
-      break;
-    }
+  if (own.IsDealt()) {
+    HoleCards hc;
+    hc.c1 = own.card1();
+    hc.c2 = own.card2();
+    bucket = abstraction.get_bucket(hc);
   }
 
   key.hand_bucket = bucket;
-  key.street = static_cast<uint8_t>(state.GetPhase());
-  key.pot_size = QuantizePot(state.GetPot(), 3.0, options_.pot_quantization);
-  key.bet_sequence =
-      EncodeBetLevel(state.GetCurrentBet(), state.GetPot() > 0 ? state.GetPot() : 3.0);
-  key.player = 0;
+  key.street = static_cast<uint8_t>(phase);
+  key.pot_size = QuantizePot(pot, 3.0, options_.pot_quantization);
+  key.bet_sequence = EncodeBetLevel(current_bet, pot > 0 ? pot : 3.0);
+  key.player = seat;
+  return key;
+}
+
+InfosetKey CFREngine::ComputeInfosetKey(const game::GameState& state, int player,
+                                        const HandAbstraction& abstraction) const {
+  // Extract the parts this player can legitimately observe, then derive the key
+  // via the shared helper (identical to the Observation path).
+  game::HoleCards own;
+  uint8_t seat = 0;
   for (const auto& p : state.AllPlayers()) {
     if (p.id == static_cast<int32_t>(player)) {
-      key.player = p.seat;
+      own = p.hole_cards;
+      seat = p.seat;
       break;
     }
   }
+  return ComputeInfosetKeyFromParts(own, state.GetPhase(), state.GetPot(),
+                                    state.GetCurrentBet(), seat, abstraction);
+}
 
-  return key;
+InfosetKey CFREngine::ComputeInfosetKey(const game::Observation& obs, int player) const {
+  uint8_t seat = 0;
+  for (const auto& p : obs.players) {
+    if (p.id == static_cast<int32_t>(player)) {
+      seat = p.seat;
+      break;
+    }
+  }
+  return ComputeInfosetKeyFromParts(obs.MyHoleCards(), obs.phase, obs.pot,
+                                    obs.current_bet, seat, hand_abstraction_);
 }
 
 InfosetKey CFREngine::ComputeInfosetKeyInternal(const CFRGameState& state, int player,

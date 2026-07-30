@@ -30,7 +30,7 @@ DecisionResponse AIEngine::Decide(const DecisionRequest& request) {
   DecisionResponse resp;
   auto start = std::chrono::steady_clock::now();
 
-  resp.action = MakeDecision(request.state, request.player_id);
+  resp.action = DecideFromObservation(request.observation);
 
   auto end = std::chrono::steady_clock::now();
   resp.decision_time_ms =
@@ -81,62 +81,46 @@ void AIEngine::OnHandStart() {}
 void AIEngine::OnStreetChange(int) {}
 
 
-std::optional<GameAction> AIEngine::TryCfrDecision(const GameState& game, int32_t player_id) {
+std::optional<GameAction> AIEngine::TryCfrDecision(const Observation& obs) {
   if (config_.strategy != AIStrategyType::CfrModel) return std::nullopt;
   if (!CfrPolicyStore::Instance().IsLoaded()) return std::nullopt;
-  return CfrPolicyStore::Instance().SampleAction(game, player_id, rng_);
+  return CfrPolicyStore::Instance().SampleAction(obs, rng_);
 }
 
-GameAction AIEngine::MakeDecision(const GameState& game, int32_t player_id) {
-  // Find player
-  const PlayerState* me = nullptr;
-  for (const auto& p : game.AllPlayers()) {
-    if (p.id == player_id) {
-      me = &p;
-      break;
-    }
-  }
+GameAction AIEngine::DecideFromObservation(const Observation& obs) {
+  const game::PlayerView* me = obs.Me();
   if (!me || !me->IsActive()) {
     auto a = CreateAction(ActionType::FOLD);
-    a.player_id = player_id;
+    a.player_id = obs.viewer_id;
     return a;
   }
 
-  if (auto cfr = TryCfrDecision(game, player_id)) {
+  if (auto cfr = TryCfrDecision(obs)) {
     return *cfr;
   }
 
-  double to_call = game.GetCurrentBet() - me->bet_info.current_bet;
-  if (to_call < 0) to_call = 0;
-  double equity = CalculateEquity(game, player_id, 500);
-
-  std::uniform_real_distribution<double> dist(0.0, 1.0);
-  double roll = dist(rng_);
-
   GameAction decision;
-  if (game.GetPhase() == GamePhase::PREFLOP_BETTING) {
-    decision = PreflopDecision(game, player_id);
+  if (obs.phase == GamePhase::PREFLOP_BETTING) {
+    decision = PreflopDecision(obs);
   } else {
-    decision = PostflopDecision(game, player_id);
+    decision = PostflopDecision(obs);
   }
-  decision.player_id = player_id;
+  decision.player_id = obs.viewer_id;
   return decision;
 }
 
-GameAction AIEngine::PreflopDecision(const GameState& game, int32_t player_id) {
-  const PlayerState* me = nullptr;
-  for (const auto& p : game.AllPlayers()) {
-    if (p.id == player_id) {
-      me = &p;
-      break;
-    }
-  }
+GameAction AIEngine::MakeDecision(const GameState& game, int32_t player_id) {
+  return DecideFromObservation(game.ObserveFor(player_id));
+}
+
+GameAction AIEngine::PreflopDecision(const Observation& obs) {
+  const game::PlayerView* me = obs.Me();
   if (!me) return CreateAction(ActionType::FOLD);
 
-  double to_call = game.GetCurrentBet() - me->bet_info.current_bet;
+  double to_call = obs.current_bet - me->bet_info.current_bet;
   if (to_call < 0) to_call = 0;
-  double equity = CalculateEquity(game, player_id, 500);
-  double pot = game.GetPot();
+  double equity = CalculateEquity(obs, 500);
+  double pot = obs.pot;
 
   std::uniform_real_distribution<double> dist(0.0, 1.0);
   double roll = dist(rng_);
@@ -150,7 +134,7 @@ GameAction AIEngine::PreflopDecision(const GameState& game, int32_t player_id) {
 
   // Need to call
   if (equity > 0.65) {
-    if (roll < 0.6) return CreateAction(ActionType::RAISE, to_call * 2.5 + game.GetCurrentBet());
+    if (roll < 0.6) return CreateAction(ActionType::RAISE, to_call * 2.5 + obs.current_bet);
     return CreateAction(ActionType::CALL);
   }
   if (equity > 0.45) {
@@ -161,20 +145,14 @@ GameAction AIEngine::PreflopDecision(const GameState& game, int32_t player_id) {
   return CreateAction(ActionType::FOLD);
 }
 
-GameAction AIEngine::PostflopDecision(const GameState& game, int32_t player_id) {
-  const PlayerState* me = nullptr;
-  for (const auto& p : game.AllPlayers()) {
-    if (p.id == player_id) {
-      me = &p;
-      break;
-    }
-  }
+GameAction AIEngine::PostflopDecision(const Observation& obs) {
+  const game::PlayerView* me = obs.Me();
   if (!me) return CreateAction(ActionType::FOLD);
 
-  double to_call = game.GetCurrentBet() - me->bet_info.current_bet;
+  double to_call = obs.current_bet - me->bet_info.current_bet;
   if (to_call < 0) to_call = 0;
-  double equity = CalculateEquity(game, player_id, 800);
-  double pot = game.GetPot();
+  double equity = CalculateEquity(obs, 800);
+  double pot = obs.pot;
   bool bluff = ShouldBluff();
 
   std::uniform_real_distribution<double> dist(0.0, 1.0);
@@ -195,7 +173,7 @@ GameAction AIEngine::PostflopDecision(const GameState& game, int32_t player_id) 
   double pot_odds = to_call / std::max(1.0, pot + to_call);
 
   if (equity > 0.7) {
-    if (roll < 0.5) return CreateAction(ActionType::RAISE, to_call * 2 + game.GetCurrentBet());
+    if (roll < 0.5) return CreateAction(ActionType::RAISE, to_call * 2 + obs.current_bet);
     return CreateAction(ActionType::CALL);
   }
   if (equity > 0.5) {
@@ -206,21 +184,15 @@ GameAction AIEngine::PostflopDecision(const GameState& game, int32_t player_id) 
   return CreateAction(ActionType::FOLD);
 }
 
-double AIEngine::CalculateEquity(const GameState& game, int32_t player_id, int n_samples) {
-  const PlayerState* me = nullptr;
-  for (const auto& p : game.AllPlayers()) {
-    if (p.id == player_id) {
-      me = &p;
-      break;
-    }
-  }
-  if (!me || !me->hole_cards.IsDealt()) return 0.5;
+double AIEngine::CalculateEquity(const Observation& obs, int n_samples) {
+  const HoleCards& hole = obs.MyHoleCards();
+  if (!hole.IsDealt()) return 0.5;
 
-  const uint8_t c1 = me->hole_cards.card1();
-  const uint8_t c2 = me->hole_cards.card2();
+  const uint8_t c1 = hole.card1();
+  const uint8_t c2 = hole.card2();
 
   // Fast preflop heuristic for EASY / low sample budgets
-  if (game.GetPhase() == GamePhase::PREFLOP_BETTING &&
+  if (obs.phase == GamePhase::PREFLOP_BETTING &&
       config_.difficulty == AIDifficulty::EASY) {
     uint8_t r1 = c1 >> 2;
     uint8_t r2 = c2 >> 2;
@@ -258,7 +230,7 @@ double AIEngine::CalculateEquity(const GameState& game, int32_t player_id, int n
   hero.Set(HandId::Encode(c1, c2), 1.0f);
   Range villain = Range::FullCombinatorial();
 
-  const auto& community = game.GetCommunity();
+  const auto& community = obs.community;
   uint8_t board[5] = {0};
   int board_size = static_cast<int>(community.count);
   for (int i = 0; i < board_size; ++i) board[i] = community.cards[i];

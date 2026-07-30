@@ -143,6 +143,12 @@ std::vector<std::pair<Action, double>> Policy::GetActionDistribution(const game:
   return engine_.GetStrategyForState(state, player);
 }
 
+std::vector<std::pair<Action, double>> Policy::GetActionDistribution(const game::Observation& obs,
+                                                                     int player) const {
+  if (!loaded_) return {};
+  return engine_.GetStrategyForState(obs, player);
+}
+
 std::pair<Action, double> Policy::GetBestAction(const game::GameState& state, int player) const {
   auto dist = GetActionDistribution(state, player);
   if (dist.empty()) return {Action::Fold, 0.0};

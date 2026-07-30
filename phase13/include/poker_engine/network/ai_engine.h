@@ -8,12 +8,14 @@
 
 #include "poker_engine/game/action.h"
 #include "poker_engine/game/game_state.h"
+#include "poker_engine/game/observation.h"
 
 namespace poker_engine::network {
 
 using game::ActionType;
 using game::GameAction;
 using game::GameState;
+using game::Observation;
 
 enum class AIDifficulty { EASY, MEDIUM, HARD, EXPERT };
 
@@ -31,9 +33,12 @@ struct AIConfig {
   int64_t time_limit_ms = 5000;  // max decision time (ADR-004)
 };
 
-// ADR-004: Decision request with read-only game state view.
+// ADR-004: Decision request carrying a REDACTED per-player observation.
+// The agent receives a game::Observation (public table state + only its own
+// hole cards). Opponents' hole cards are not representable in this type, so an
+// agent cannot peek at hidden information through Decide().
 struct DecisionRequest {
-  const GameState& state;
+  game::Observation observation;
   int32_t player_id;
   std::vector<GameAction> legal_actions;
 };
@@ -86,6 +91,8 @@ class AIEngine : public IAIEngine {
   AIDifficulty Difficulty() const override { return config_.difficulty; }
 
   // ---- Legacy API (kept for backward compatibility) ----
+  // Trusted server path: builds a redacted Observation via ObserveFor and routes
+  // through the same decision core as Decide().
   GameAction MakeDecision(const GameState& game, int32_t player_id);
 
   void OnActionTaken(int32_t player_id, ActionType action, double amount);
@@ -102,13 +109,16 @@ class AIEngine : public IAIEngine {
   AIConfig config_;
   std::mt19937 rng_;
 
-  double CalculateEquity(const GameState& game, int32_t player_id, int n_samples = 1000);
+  // Shared decision core consumed by both Decide() and legacy MakeDecision().
+  GameAction DecideFromObservation(const Observation& obs);
+
+  double CalculateEquity(const Observation& obs, int n_samples = 1000);
   bool ShouldBluff();
   GameAction CreateAction(ActionType type, double amount = 0);
-  GameAction PreflopDecision(const GameState& game, int32_t player_id);
-  GameAction PostflopDecision(const GameState& game, int32_t player_id);
+  GameAction PreflopDecision(const Observation& obs);
+  GameAction PostflopDecision(const Observation& obs);
   double CalculateBetSize(double pot, double to_call);
-  std::optional<GameAction> TryCfrDecision(const GameState& game, int32_t player_id);
+  std::optional<GameAction> TryCfrDecision(const Observation& obs);
 };
 
 // Factory function for creating AI engines by strategy type.

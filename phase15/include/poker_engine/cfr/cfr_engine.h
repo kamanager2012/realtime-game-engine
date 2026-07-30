@@ -11,6 +11,7 @@
 #include "cfr_range.h"
 #include "poker_engine/evaluator/evaluator.h"
 #include "poker_engine/game/game_state.h"
+#include "poker_engine/game/observation.h"
 #include "types.h"
 
 namespace poker_engine::cfr {
@@ -78,6 +79,11 @@ class CFREngine {
   std::vector<std::pair<Action, double>> GetStrategy(const InfosetKey& key);
   std::vector<std::pair<Action, double>> GetStrategyForState(const game::GameState& state,
                                                                int player) const;
+  // Observation path: identical infoset key derivation as the GameState path
+  // (shared ComputeInfosetKeyFromParts), so a CFR agent behaves the same whether
+  // it sees the full GameState or a redacted Observation.
+  std::vector<std::pair<Action, double>> GetStrategyForState(const game::Observation& obs,
+                                                               int player) const;
 
   void PrintStats() const;
 
@@ -96,6 +102,12 @@ class CFREngine {
   InfosetKey ComputeInfosetKey(const TraversalState& state, int player) const;
   InfosetKey ComputeInfosetKey(const game::GameState& state, int player,
                                const cfr::HandAbstraction& abstraction) const;
+  InfosetKey ComputeInfosetKey(const game::Observation& obs, int player) const;
+  // Shared infoset-key derivation used by both the GameState and Observation
+  // paths so their keys are byte-identical (no strategy drift).
+  InfosetKey ComputeInfosetKeyFromParts(const game::HoleCards& own, game::GamePhase phase,
+                                        double pot, double current_bet, uint8_t seat,
+                                        const cfr::HandAbstraction& abstraction) const;
   InfosetKey ComputeInfosetKeyInternal(const CFRGameState& state, int player,
                                        const cfr::HandAbstraction& abstraction) const;
 

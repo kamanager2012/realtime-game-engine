@@ -76,6 +76,8 @@ class Policy {
 
   std::vector<std::pair<Action, double>> GetActionDistribution(const game::GameState& state,
                                                                int player) const;
+  std::vector<std::pair<Action, double>> GetActionDistribution(const game::Observation& obs,
+                                                               int player) const;
 
   std::pair<Action, double> GetBestAction(const game::GameState& state, int player) const;
 

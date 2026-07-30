@@ -121,4 +121,30 @@ std::optional<GameAction> CfrPolicyStore::SampleAction(const GameState& state, i
   return ga;
 }
 
+std::optional<GameAction> CfrPolicyStore::SampleAction(const game::Observation& obs,
+                                                       std::mt19937& rng) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (!loaded_) return std::nullopt;
+
+  const game::PlayerView* me = obs.Me();
+  if (!me || !me->IsActive()) return std::nullopt;
+
+  auto dist = policy_.GetActionDistribution(obs, obs.viewer_id);
+  if (dist.empty()) return std::nullopt;
+
+  Action picked = SampleFromDistribution(dist, rng);
+  double to_call = obs.current_bet - me->bet_info.current_bet;
+  if (to_call < 0) to_call = 0;
+  const double pot = obs.pot;
+  const double bb = 2.0;
+  const double min_raise_to = obs.current_bet + bb;
+
+  GameAction ga;
+  ga.player_id = obs.viewer_id;
+  ga.type = MapCfrAction(picked, to_call);
+  ga.amount = BetAmountForCfr(picked, pot, to_call, min_raise_to, me->chips, obs.current_bet,
+                              me->bet_info.current_bet);
+  return ga;
+}
+
 }  // namespace poker_engine::network
