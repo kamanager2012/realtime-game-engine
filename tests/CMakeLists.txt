@@ -41,6 +41,7 @@ set(TEST_LINK_LIBS
         phase17
         phase18
         phase21
+        arena
         poker_net
         GTest::gtest_main
 )
@@ -101,6 +102,7 @@ set(FAST_TEST_SOURCES
     security_integration_test.cpp
     test_cfr_bot_live.cpp
     property_tests.cpp
+    arena_test.cpp
 )
 
 add_executable(poker_tests ${FAST_TEST_SOURCES})
