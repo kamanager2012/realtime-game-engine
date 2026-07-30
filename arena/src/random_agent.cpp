@@ -2,6 +2,7 @@
 
 #include "poker_engine/game/action.h"
 #include "poker_engine/game/game_state.h"
+#include "poker_engine/game/observation.h"
 #include "poker_engine/game/player_state.h"
 
 namespace poker_engine::arena {
@@ -10,7 +11,8 @@ using poker_engine::game::ActionType;
 using poker_engine::game::Chips;
 using poker_engine::game::GameAction;
 using poker_engine::game::GameState;
-using poker_engine::game::PlayerState;
+using poker_engine::game::Observation;
+using poker_engine::game::PlayerView;
 using poker_engine::network::AIConfig;
 using poker_engine::network::DecisionRequest;
 using poker_engine::network::DecisionResponse;
@@ -28,12 +30,12 @@ DecisionResponse RandomAgent::Decide(const DecisionRequest& request) {
   response.confidence = 0.0f;
   response.reason = "uniform-random baseline";
 
-  // Prefer the caller-supplied legal set; otherwise ask the engine directly.
-  std::vector<GameAction> legal = request.legal_actions;
-  if (legal.empty()) legal = request.state.LegalActions(request.player_id);
+  // The runner supplies the validator-legal action set. With only a redacted
+  // Observation we cannot recompute legal actions ourselves (no engine access),
+  // so an empty set means "nothing to do": fold defensively.
+  const std::vector<GameAction>& legal = request.legal_actions;
 
   if (legal.empty()) {
-    // Nothing legal (not our turn / already all-in): fold defensively.
     GameAction fold;
     fold.type = ActionType::FOLD;
     fold.player_id = request.player_id;
@@ -46,15 +48,10 @@ DecisionResponse RandomAgent::Decide(const DecisionRequest& request) {
 
   // Size bets/raises uniformly between the minimum and all-in.
   if (chosen.type == ActionType::BET || chosen.type == ActionType::RAISE) {
-    Chips my_chips = 0;
-    Chips my_current = 0;
-    for (const auto& p : request.state.AllPlayers()) {
-      if (p.id == request.player_id) {
-        my_chips = p.chips;
-        my_current = p.bet_info.current_bet;
-        break;
-      }
-    }
+    const Observation& obs = request.observation;
+    const PlayerView* me = obs.Me();
+    const Chips my_chips = me ? me->chips : 0;
+    const Chips my_current = me ? me->bet_info.current_bet : 0;
     const Chips max_total = my_chips + my_current;
     if (max_total > chosen.amount) {
       std::uniform_int_distribution<int64_t> size(chosen.amount, max_total);

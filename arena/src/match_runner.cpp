@@ -110,7 +110,7 @@ bool PlayOneHand(GameState& state, int k,
     IAIEngine& agent = agent_for(cur);
 
     std::vector<GameAction> legal = state.LegalActions(cur);
-    DecisionRequest req{state, cur, legal};
+    DecisionRequest req{state.ObserveFor(cur), cur, legal};
     DecisionResponse resp = agent.Decide(req);
     GameAction action = Sanitize(legal, state, cur, resp.action);
     action.player_id = cur;
