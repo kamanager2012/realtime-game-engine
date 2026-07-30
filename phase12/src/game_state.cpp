@@ -948,6 +948,37 @@ bool GameState::SetPlayerChips(int32_t player_id, Chips chips) {
   return false;
 }
 
+Observation GameState::ObserveFor(int32_t viewer_id) const {
+  Observation obs;
+  obs.phase = phase_;
+  obs.current_bet = current_bet_;
+  obs.pot = GetPot();
+  obs.big_blind = config_.big_blind;
+  obs.ante = config_.ante;
+  obs.community = community_;
+  obs.viewer_id = viewer_id;
+
+  obs.players.reserve(players_.size());
+  for (const auto& p : players_) {
+    PlayerView v;
+    v.id = p.id;
+    v.seat = p.seat;
+    v.seat_state = p.seat_state;
+    v.chips = p.chips;
+    v.bet_info = p.bet_info;
+    v.is_dealer = p.is_dealer;
+    v.is_small_blind = p.is_small_blind;
+    v.is_big_blind = p.is_big_blind;
+    v.acted_this_round = p.acted_this_round;
+    v.has_cards = p.HasCards();
+    obs.players.push_back(v);
+
+    // Only the viewer's own hole cards cross the redaction boundary.
+    if (p.id == viewer_id) obs.my_hole_cards = p.hole_cards;
+  }
+  return obs;
+}
+
 std::vector<GameAction> GameState::LegalActions(int32_t player_id) const {
   std::vector<GameAction> actions;
   if (!hand_started_) return actions;

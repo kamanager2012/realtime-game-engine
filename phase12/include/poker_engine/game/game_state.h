@@ -9,6 +9,7 @@
 
 #include "poker_engine/game/action.h"
 #include "poker_engine/game/dealer.h"
+#include "poker_engine/game/observation.h"
 #include "poker_engine/game/player_state.h"
 #include "poker_engine/game/pot_manager.h"
 #include "poker_engine/game/showdown_evaluator.h"
@@ -100,6 +101,13 @@ class GameState {
   // table across thousands of hands without RemovePlayer/AddPlayerAtSeat churn.
   // NOT for production — bypasses buy-in/wallet accounting.
   bool SetPlayerChips(int32_t player_id, Chips chips);
+
+  // Build a redacted, imperfect-information view for `viewer_id`: public table
+  // state plus ONLY the viewer's own hole cards. Opponents' hole cards are never
+  // copied out (see Observation / PlayerView). This is the boundary an agent's
+  // Decide() consumes so it cannot peek at hidden information. Returns an
+  // Observation with viewer_id == -1's own cards empty if the id is not seated.
+  Observation ObserveFor(int32_t viewer_id) const;
 
   // === Queries ===
   const std::vector<PlayerState>& AllPlayers() const { return players_; }
