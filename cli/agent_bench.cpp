@@ -56,7 +56,7 @@ void PrintUsage() {
       "  --duplicate        variance reduction via seat rotation (duplicate poker)\n"
       "  --aivat            per-street runout EV adjustment (unbiased chance control variate; heads-up)\n"
       "  --roundrobin       play every pair of --agents and print a mbb/100 leaderboard\n"
-      "  --exploitability   run live Local Best Response vs --a; prints a lower bound (LBR bets checked-to)\n"
+      "  --exploitability   run live Local Best Response vs --a; prints a lower bound (LBR bets & re-raises by EV)\n"
       "  --threads T        parallel shards for throughput (default 1)\n"
       "  --cfr-model PATH   CFR policy weights (required for cfr agent)\n");
 }
@@ -203,11 +203,12 @@ int RunLbrExploitability(const std::string& kind, int hands, uint64_t seed, int 
   std::printf("%-22s %15.2f\n", "95% CI (+/-)", ci95);
   std::printf("%-22s %15s\n", "chips conserved", conserved ? "yes" : "NO");
   std::printf(
-      "\nNOTE: LBR value-/bluff-bets on checked-to nodes (to_call==0) and only\n"
-      "      folds/calls when facing a bet (it never re-raises), so this is still a\n"
-      "      LOWER BOUND on the opponent's true full-game exploitability: the real\n"
-      "      value is >= this. Larger mbb/100 = more exploitable. It is measured in\n"
-      "      the FULL NLHE game (not a CFR abstraction).\n");
+      "\nNOTE: LBR value-/bluff-bets on checked-to nodes (to_call==0) and also\n"
+      "      re-raises when facing a bet whenever an EV estimate beats calling,\n"
+      "      so this is a TIGHTER but still valid LOWER BOUND on the opponent's\n"
+      "      true full-game exploitability: the real value is >= this. Larger\n"
+      "      mbb/100 = more exploitable. It is measured in the FULL NLHE game\n"
+      "      (not a CFR abstraction).\n");
   if (kind == "cfr" && !cfr_model.empty()) {
     auto info = poker_engine::cfr::CFRModelIO::GetInfo(cfr_model);
     if (info) {

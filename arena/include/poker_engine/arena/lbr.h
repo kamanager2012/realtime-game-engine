@@ -15,18 +15,22 @@ namespace poker_engine::arena {
 // belief modelling only affects tightness, not validity.
 //
 // When `bet` is enabled, LBR value-/bluff-bets on checked-to nodes (it may bet
-// when it is not facing a bet, i.e. to_call == 0) and still only folds/calls
-// when facing a bet. This is a strictly tighter — but still valid — lower bound
-// than the fold/call-only form: betting lets LBR punish over-calling opponents
-// (e.g. a CallStation) that a passive responder cannot exploit. With `bet`
-// disabled it degrades to the fold/call-only variant.
+// when it is not facing a bet, i.e. to_call == 0). When `raise` is also enabled
+// (the default), LBR additionally re-raises when facing a bet whenever an EV
+// estimate says a raise beats calling/folding — otherwise it just folds/calls.
+// Both are strictly tighter — but still valid — lower bounds than the passive
+// fold/call-only form: betting lets LBR punish over-calling opponents (e.g. a
+// CallStation), and re-raising extracts more value / applies more pressure vs
+// opponents that bet a lot (e.g. a Maniac). With `bet` disabled LBR degrades to
+// the fold/call-only variant (and `raise` has no effect).
 //
 // LBR obtains the opponent's per-hand behaviour by counterfactual probing: it
 // asks a separate "probe" instance of the same agent what it would do with each
 // hypothetical villain hole-card combo, then Bayes-filters its belief over the
-// villain's range by consistency with the real action. Bet-sizing EV uses the
-// same probe to estimate the villain's fold probability facing a candidate bet;
-// EV accuracy only affects the bound's tightness, never its validity.
+// villain's range by consistency with the real action. Bet-/raise-sizing EV
+// uses the same probe to estimate the villain's fold probability facing a
+// candidate wager; EV accuracy only affects the bound's tightness, never its
+// validity (any legal LBR policy yields a valid lower bound).
 struct LbrConfig {
   int hands = 10000;
   uint64_t seed = 1;
@@ -35,6 +39,9 @@ struct LbrConfig {
   poker_engine::game::Chips starting_stack = 0;
   // Allow LBR to bet on checked-to nodes (to_call == 0). false => fold/call only.
   bool bet = true;
+  // Allow LBR to re-raise when facing a bet (only takes effect when bet==true).
+  // false => LBR bets checked-to nodes but only folds/calls facing a bet (v0.9).
+  bool raise = true;
 };
 
 struct LbrResult {

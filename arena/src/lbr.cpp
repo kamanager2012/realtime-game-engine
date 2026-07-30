@@ -237,16 +237,20 @@ double FoldProbeCallRange(const Range& belief, const Observation& v_facing,
   return fold_mass / total;
 }
 
-// LBR's own decision. Facing a bet (to_call > 0) it only folds/calls by pot
-// odds (never raises). On a checked-to node (to_call == 0) it may bet: it
-// compares checking (util = wp0*pot) against candidate bet sizes, whose EV uses
-// the counterfactually probed villain fold probability and LBR's equity vs the
-// non-folding range. It bets the argmax only when it strictly beats checking,
-// so LBR value-/bluff-bets to punish over-calling opponents. Betting is skipped
-// when `allow_bet` is false (degrading to the fold/call-only variant).
+// LBR's own decision, unified across checked-to and facing-a-bet nodes. It
+// compares a passive baseline (check when to_call==0; call-vs-fold by pot odds
+// when facing a bet) against candidate aggressive sizes (a pot-proportional and
+// an all-in raise/bet), whose EV uses the counterfactually probed villain fold
+// probability `fp` and LBR's equity `wp1` vs the non-folding range. It takes the
+// argmax only when a wager strictly beats the passive baseline, so LBR value-
+// /bluff-bets on checked-to nodes AND re-raises facing a bet to extract value /
+// apply pressure. Aggression on checked-to nodes needs `allow_bet`; re-raising
+// facing a bet needs `allow_raise`. With both off it degrades to fold/call. The
+// raise EV reduces EXACTLY to the checked-to bet EV when to_call==0, so enabling
+// facing-bet raises never changes checked-to behaviour.
 GameAction LbrDecide(const Observation& obs, const Observation& villain_obs,
                      const std::vector<GameAction>& legal, const Range& belief, bool allow_bet,
-                     IAIEngine& probe) {
+                     bool allow_raise, IAIEngine& probe) {
   const GameAction* check = nullptr;
   const GameAction* call = nullptr;
   const GameAction* fold = nullptr;
@@ -259,45 +263,61 @@ GameAction LbrDecide(const Observation& obs, const Observation& villain_obs,
   }
 
   const Chips to_call = obs.current_bet - obs.MyCurrentBet();
+  const double pot0 = static_cast<double>(obs.pot);
+  const double tc = static_cast<double>(to_call);
+  const double wp0 = BeliefEquity(obs, belief);
+
+  // Passive baseline utility + action. Facing a bet, call iff util[call] >= 0
+  // (== v0.9 pot-odds: wp0 >= tc/(pot0+tc)); ties break to call. Checked-to, the
+  // baseline is a free check (util = wp0*pot0).
+  double best_util;
+  const GameAction* best;
   if (to_call > 0) {
-    const double pot = static_cast<double>(obs.pot);
-    const double tc = static_cast<double>(to_call);
-    const double eq = BeliefEquity(obs, belief);
-    const double threshold = tc / (pot + tc);
-    if (eq >= threshold && call) return *call;
-    if (fold) return *fold;
-    if (call) return *call;
-    if (check) return *check;
-    GameAction f;
-    f.type = ActionType::FOLD;
-    f.player_id = obs.viewer_id;
-    return f;
+    const double util_call = wp0 * (pot0 + tc) - tc;
+    if (util_call >= 0.0 && call) {
+      best_util = util_call;
+      best = call;
+    } else if (fold) {
+      best_util = 0.0;
+      best = fold;
+    } else if (call) {
+      best_util = util_call;
+      best = call;
+    } else {
+      best_util = wp0 * pot0;
+      best = check;
+    }
+  } else {
+    best_util = wp0 * pot0;  // utility of checking
+    best = check;
   }
 
-  // to_call == 0: free check available. Consider betting if allowed.
-  if (allow_bet && min_agg) {
-    const double pot0 = static_cast<double>(obs.pot);
-    const double wp0 = BeliefEquity(obs, belief);
-    double best_util = wp0 * pot0;  // utility of checking
-    const GameAction* best = check;
-
+  // Consider aggressive candidates: checked-to bets need allow_bet, facing-bet
+  // re-raises need allow_raise.
+  const bool aggressive = min_agg && (to_call > 0 ? allow_raise : allow_bet);
+  if (aggressive) {
     const Chips my_cur = obs.MyCurrentBet();
+    const Chips cur_bet = obs.current_bet;  // level LBR must raise over
     const Chips min_total = min_agg->amount;
     // The engine's ALL_IN legal action carries amount==0 (size computed
     // internally), so derive LBR's all-in total from its own stack.
     const Chips allin_total = my_cur + obs.MyChips();
-    const Chips pot_total = std::min(std::max(my_cur + static_cast<Chips>(obs.pot), min_total),
-                                     allin_total);
+    // Pot-proportional raise/bet "to" total: checked-to => my_cur + pot0;
+    // facing a bet => cur_bet + (pot0 + to_call) (a pot-sized raise).
+    const Chips pot_to = to_call > 0
+        ? cur_bet + static_cast<Chips>(obs.pot) + to_call
+        : my_cur + static_cast<Chips>(obs.pot);
+    const Chips pot_total = std::min(std::max(pot_to, min_total), allin_total);
     Chips cands[2] = {pot_total, allin_total};
     const Chips villain_chips = villain_obs.MyChips();
 
     GameAction chosen;
-    bool have_bet = false;
+    bool have_agg = false;
     for (int i = 0; i < 2; ++i) {
-      const Chips cand = cands[i];
+      const Chips cand = cands[i];  // total "to" amount R
       if (cand < min_total || cand > allin_total) continue;
       if (i == 1 && cands[1] == cands[0]) continue;  // dedup all-in == pot
-      const Chips g = cand - my_cur;
+      const Chips g = cand - my_cur;  // LBR's additional chips this street
       if (g <= 0) continue;
 
       const Observation v_facing = SynthVillainFacingBet(villain_obs, cand, g);
@@ -310,20 +330,24 @@ GameAction LbrDecide(const Observation& obs, const Observation& villain_obs,
                          : call_range.Sum() > 1e-8f ? BeliefEquity(obs, call_range)
                                                     : wp0;
 
-      const double m = static_cast<double>(std::min(g, villain_chips));  // matched if called
-      const double util_bet =
-          fp * pot0 + (1.0 - fp) * (wp1 * (pot0 + m) - (1.0 - wp1) * m);
-      if (util_bet > best_util) {
-        best_util = util_bet;
+      // Chips the villain must add to call our raise, and LBR's matched risk.
+      // Reduces to the v0.9 checked-to formula when to_call==0 (cur_bet==my_cur):
+      // villain_add==g, matched_lbr==g.
+      const double villain_add = static_cast<double>(std::min(cand - cur_bet, villain_chips));
+      const double matched_lbr = tc + villain_add;
+      const double util_raise =
+          fp * pot0 + (1.0 - fp) * (wp1 * (pot0 + villain_add) - (1.0 - wp1) * matched_lbr);
+      if (util_raise > best_util) {
+        best_util = util_raise;
         chosen = *min_agg;
         chosen.amount = cand;
-        have_bet = true;
+        have_agg = true;
       }
     }
-    if (have_bet) return chosen;
-    if (best) return *best;
+    if (have_agg) return chosen;
   }
 
+  if (best) return *best;
   if (check) return *check;
   if (call) return *call;
   GameAction f;
@@ -407,7 +431,8 @@ LbrResult RunLbr(IAIEngine& live_opponent, IAIEngine& probe_opponent, const LbrC
           last_board_count = board.count;
         }
         const Observation villain_obs_now = state.ObserveFor(kVillainId);
-        GameAction action = LbrDecide(obs, villain_obs_now, legal, belief, config.bet, probe_opponent);
+        GameAction action = LbrDecide(obs, villain_obs_now, legal, belief, config.bet,
+                                      config.bet && config.raise, probe_opponent);
         action.player_id = cur;
         if (!state.ProcessAction(cur, action)) {
           GameAction fb = SafeFallback(legal, cur);
