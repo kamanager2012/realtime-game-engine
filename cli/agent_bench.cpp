@@ -6,23 +6,29 @@
 //   agent_bench --agents random,rule,random --hands 5000 --seed 1
 //   agent_bench --a random --b random --hands 200000 --threads 8
 //   agent_bench --cfr --a cfr --b rule --cfr-model data/bot_policy.cfr
+//   agent_bench --roundrobin --agents random,callstation,maniac,rule --hands 4000 --seed 1
 //   agent_bench --exploitability --cfr-model data/bot_policy.cfr
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "poker_engine/arena/baseline_agents.h"
 #include "poker_engine/arena/match_runner.h"
 #include "poker_engine/arena/random_agent.h"
 #include "poker_engine/cfr/cfr_model.h"
 #include "poker_engine/network/ai_engine.h"
 #include "poker_engine/network/cfr_policy_store.h"
 
+using poker_engine::arena::CallStationAgent;
+using poker_engine::arena::ManiacAgent;
 using poker_engine::arena::MatchConfig;
 using poker_engine::arena::MatchResult;
 using poker_engine::arena::RandomAgent;
@@ -38,8 +44,9 @@ void PrintUsage() {
   std::printf(
       "Usage: agent_bench --a <kind> --b <kind> [options]\n"
       "       agent_bench --agents <k1,k2,...> [options]\n"
+      "       agent_bench --roundrobin --agents <k1,k2,...> [options]\n"
       "       agent_bench --exploitability --cfr-model <path>\n\n"
-      "  <kind> is one of: random | rule | cfr\n\n"
+      "  <kind> is one of: random | callstation | maniac | rule | cfr\n\n"
       "Options:\n"
       "  --hands N          number of hands (default 10000)\n"
       "  --seed S           deterministic match seed (default 1)\n"
@@ -47,6 +54,7 @@ void PrintUsage() {
       "  --stack CENTS      starting stack per hand (default 200 big blinds)\n"
       "  --duplicate        variance reduction via seat rotation (duplicate poker)\n"
       "  --aivat            per-street runout EV adjustment (unbiased chance control variate; heads-up)\n"
+      "  --roundrobin       play every pair of --agents and print a mbb/100 leaderboard\n"
       "  --threads T        parallel shards for throughput (default 1)\n"
       "  --cfr-model PATH   CFR policy weights (required for cfr agent)\n");
 }
@@ -60,6 +68,14 @@ std::unique_ptr<IAIEngine> MakeAgent(const std::string& kind, uint64_t seed,
   if (kind == "random") {
     cfg.name = "Random";
     return std::make_unique<RandomAgent>(cfg);
+  }
+  if (kind == "call" || kind == "callstation") {
+    cfg.name = "CallStation";
+    return std::make_unique<CallStationAgent>(cfg);
+  }
+  if (kind == "maniac" || kind == "allin") {
+    cfg.name = "Maniac";
+    return std::make_unique<ManiacAgent>(cfg);
   }
   if (kind == "rule") {
     cfg.name = "RuleBased";
@@ -150,6 +166,184 @@ MatchResult RunShard(const std::vector<std::string>& kinds, const MatchConfig& b
   return r;
 }
 
+// Run `hands` hands for `kinds` across `threads` independent shards (distinct
+// sub-seeds) and pool the sufficient statistics into a single MatchResult, so a
+// threaded run reproduces the exact estimator of a single-threaded one.
+MatchResult PooledMatch(const std::vector<std::string>& kinds, const MatchConfig& base,
+                        int hands, int threads, uint64_t seed, const std::string& cfr_model,
+                        bool* ok) {
+  const int k = static_cast<int>(kinds.size());
+  if (threads < 1) threads = 1;
+  if (threads > hands) threads = hands;
+
+  std::vector<MatchResult> shard_results(threads);
+  std::vector<char> shard_ok(threads, 0);
+  std::vector<std::thread> pool;
+  const int base_hands = hands / threads;
+  const int remainder = hands % threads;
+
+  for (int t = 0; t < threads; ++t) {
+    const int shard_hands = base_hands + (t < remainder ? 1 : 0);
+    MatchConfig cfg = base;
+    cfg.hands = shard_hands;
+    const uint64_t match_seed = seed + static_cast<uint64_t>(t);
+    pool.emplace_back([&, t, cfg, match_seed]() {
+      bool sok = false;
+      MatchResult r = RunShard(kinds, cfg, match_seed, cfr_model, &sok);
+      shard_results[t] = r;
+      shard_ok[t] = sok ? 1 : 0;
+    });
+  }
+  for (auto& th : pool) th.join();
+
+  MatchResult agg;
+  agg.net_by_seat.assign(k, 0);
+  agg.big_blind = static_cast<double>(base.table.big_blind);
+  agg.reps = base.duplicate ? k : 1;
+  agg.variance_reduced = base.duplicate;
+  double sum = 0.0, sumsq = 0.0;
+  long long n = 0;
+  for (int t = 0; t < threads; ++t) {
+    if (!shard_ok[t]) {
+      *ok = false;
+      return agg;
+    }
+    const MatchResult& r = shard_results[t];
+    for (int a = 0; a < k; ++a) agg.net_by_seat[a] += r.net_by_seat[a];
+    sum += r.sample_sum;
+    sumsq += r.sample_sumsq;
+    n += r.sample_n;
+    agg.hands_played += r.hands_played;
+    if (!r.chips_conserved) agg.chips_conserved = false;
+    agg.adjusted_hands += r.adjusted_hands;
+    if (r.aivat_applied) agg.aivat_applied = true;
+  }
+  agg.sample_n = n;
+  agg.sample_sum = sum;
+  agg.sample_sumsq = sumsq;
+  if (n > 0) {
+    const double mean = sum / static_cast<double>(n);
+    agg.mbb_per_100 = mean * 100.0;
+    if (n > 1) {
+      const double var = (sumsq - static_cast<double>(n) * mean * mean) / static_cast<double>(n - 1);
+      const double se = std::sqrt(var / static_cast<double>(n));
+      agg.ci95 = 1.96 * se * 100.0;
+    }
+  }
+  *ok = true;
+  return agg;
+}
+
+// mbb/100 + CI from pooled sufficient statistics (n, Σx, Σx²).
+void StatsFromSuff(long long n, double sum, double sumsq, double* mbb, double* ci95) {
+  *mbb = 0.0;
+  *ci95 = 0.0;
+  if (n > 0) {
+    const double mean = sum / static_cast<double>(n);
+    *mbb = mean * 100.0;
+    if (n > 1) {
+      const double var = (sumsq - static_cast<double>(n) * mean * mean) / static_cast<double>(n - 1);
+      const double se = std::sqrt(var / static_cast<double>(n));
+      *ci95 = 1.96 * se * 100.0;
+    }
+  }
+}
+
+int RunRoundRobin(const std::vector<std::string>& kinds, const MatchConfig& base, int hands,
+                  int threads, uint64_t seed, const std::string& cfr_model) {
+  const int k = static_cast<int>(kinds.size());
+
+  // Pairwise mbb/100 matrix (row = agent, col = opponent) and per-agent pooled
+  // sufficient statistics. Heads-up is zero-sum, so agent1's per-hand sample is
+  // the negation of agent0's: one match per unordered pair suffices for both.
+  std::vector<std::vector<double>> mbb_matrix(k, std::vector<double>(k, 0.0));
+  std::vector<long long> agent_n(k, 0);
+  std::vector<double> agent_sum(k, 0.0), agent_sumsq(k, 0.0);
+  std::vector<long long> agent_hands(k, 0);
+
+  bool all_conserved = true;
+  long long total_adjusted = 0;
+  bool any_aivat = false;
+
+  int pair_index = 0;
+  for (int i = 0; i < k; ++i) {
+    for (int j = i + 1; j < k; ++j) {
+      std::vector<std::string> pair = {kinds[i], kinds[j]};
+      const uint64_t pair_seed = seed + static_cast<uint64_t>(pair_index) * 2654435761ull;
+      ++pair_index;
+      bool ok = false;
+      MatchResult r = PooledMatch(pair, base, hands, threads, pair_seed, cfr_model, &ok);
+      if (!ok) {
+        std::fprintf(stderr, "error: match %s vs %s failed\n", kinds[i].c_str(), kinds[j].c_str());
+        return 1;
+      }
+      const std::int64_t net_total = r.net_by_seat[0] + r.net_by_seat[1];
+      if (!r.chips_conserved || net_total != 0) all_conserved = false;
+      total_adjusted += r.adjusted_hands;
+      if (r.aivat_applied) any_aivat = true;
+
+      mbb_matrix[i][j] = r.mbb_per_100;
+      mbb_matrix[j][i] = -r.mbb_per_100;
+
+      // agent i is agent0 (samples as-is); agent j is agent1 (negate sum).
+      agent_n[i] += r.sample_n;
+      agent_sum[i] += r.sample_sum;
+      agent_sumsq[i] += r.sample_sumsq;
+      agent_hands[i] += r.hands_played;
+
+      agent_n[j] += r.sample_n;
+      agent_sum[j] += -r.sample_sum;
+      agent_sumsq[j] += r.sample_sumsq;
+      agent_hands[j] += r.hands_played;
+    }
+  }
+
+  std::printf("round-robin: %d agents  hands/pair: %d  seed: %llu  bb: %lld cents  threads: %d\n",
+              k, hands, static_cast<unsigned long long>(seed),
+              static_cast<long long>(base.table.big_blind), threads);
+  std::printf("duplicate: %s   aivat: %s\n\n", base.duplicate ? "yes" : "no",
+              base.aivat ? "yes" : "no");
+
+  // Pairwise matrix: cell [row][col] = row's mbb/100 vs col.
+  std::printf("mbb/100 matrix (row vs col):\n");
+  std::printf("%-14s", "");
+  for (int j = 0; j < k; ++j) std::printf("%12d", j);
+  std::printf("\n");
+  for (int i = 0; i < k; ++i) {
+    char label[16];
+    std::snprintf(label, sizeof(label), "[%d]%s", i, kinds[i].c_str());
+    std::printf("%-14.14s", label);
+    for (int j = 0; j < k; ++j) {
+      if (i == j) std::printf("%12s", "--");
+      else std::printf("%12.1f", mbb_matrix[i][j]);
+    }
+    std::printf("\n");
+  }
+
+  // Leaderboard: pooled mbb/100 + CI per agent, ranked descending.
+  std::vector<int> order(k);
+  std::iota(order.begin(), order.end(), 0);
+  std::vector<double> mbb(k, 0.0), ci(k, 0.0);
+  for (int a = 0; a < k; ++a) StatsFromSuff(agent_n[a], agent_sum[a], agent_sumsq[a], &mbb[a], &ci[a]);
+  std::sort(order.begin(), order.end(), [&](int x, int y) { return mbb[x] > mbb[y]; });
+
+  std::printf("\nleaderboard (pooled across all opponents):\n");
+  std::printf("%-4s %-14s %14s %14s %12s\n", "rank", "agent", "mbb/100", "95% CI (+/-)", "hands");
+  for (int rank = 0; rank < k; ++rank) {
+    const int a = order[rank];
+    char label[16];
+    std::snprintf(label, sizeof(label), "[%d]%s", a, kinds[a].c_str());
+    std::printf("%-4d %-14.14s %14.2f %14.2f %12lld\n", rank + 1, label, mbb[a], ci[a],
+                agent_hands[a]);
+  }
+
+  std::printf("\n%-22s %15s\n", "aivat (runout EV)", any_aivat ? "yes" : "no");
+  std::printf("%-22s %15lld\n", "adjusted hands", total_adjusted);
+  std::printf("%-22s %15s\n", "chips conserved", all_conserved ? "yes" : "NO");
+
+  return all_conserved ? 0 : 2;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -164,6 +358,7 @@ int main(int argc, char** argv) {
   bool exploitability = false;
   bool duplicate = false;
   bool aivat = false;
+  bool roundrobin = false;
   int threads = 1;
 
   for (int i = 1; i < argc; ++i) {
@@ -184,6 +379,7 @@ int main(int argc, char** argv) {
     else if (arg == "--stack") stack = std::atoll(next("--stack"));
     else if (arg == "--duplicate") duplicate = true;
     else if (arg == "--aivat") aivat = true;
+    else if (arg == "--roundrobin") roundrobin = true;
     else if (arg == "--threads") threads = std::atoi(next("--threads"));
     else if (arg == "--cfr-model") cfr_model = next("--cfr-model");
     else if (arg == "--exploitability") exploitability = true;
@@ -221,6 +417,8 @@ int main(int argc, char** argv) {
   base.duplicate = duplicate;
   base.aivat = aivat;
 
+  if (roundrobin) return RunRoundRobin(kinds, base, hands, threads, seed, cfr_model);
+
   std::printf("agents: ");
   for (size_t i = 0; i < kinds.size(); ++i)
     std::printf("%s%s", i ? "," : "", kinds[i].c_str());
@@ -228,59 +426,10 @@ int main(int argc, char** argv) {
               static_cast<unsigned long long>(seed), static_cast<long long>(bb), threads,
               duplicate ? "yes" : "no");
 
-  // Split hands across threads; each shard gets a distinct match seed so its
-  // deals are independent, then pool the sufficient statistics.
   const int k = static_cast<int>(kinds.size());
-  std::vector<MatchResult> shard_results(threads);
-  std::vector<char> shard_ok(threads, 0);
-  std::vector<std::thread> pool;
-
-  const int base_hands = hands / threads;
-  const int remainder = hands % threads;
-
-  for (int t = 0; t < threads; ++t) {
-    const int shard_hands = base_hands + (t < remainder ? 1 : 0);
-    MatchConfig cfg = base;
-    cfg.hands = shard_hands;
-    const uint64_t match_seed = seed + static_cast<uint64_t>(t);
-    pool.emplace_back([&, t, cfg, match_seed]() {
-      bool ok = false;
-      MatchResult r = RunShard(kinds, cfg, match_seed, cfr_model, &ok);
-      shard_results[t] = r;
-      shard_ok[t] = ok ? 1 : 0;
-    });
-  }
-  for (auto& th : pool) th.join();
-
-  // Pool shards.
-  MatchResult agg;
-  agg.net_by_seat.assign(k, 0);
-  agg.big_blind = static_cast<double>(bb);
-  agg.reps = duplicate ? k : 1;
-  agg.variance_reduced = duplicate;
-  double sum = 0.0, sumsq = 0.0;
-  long long n = 0;
-  for (int t = 0; t < threads; ++t) {
-    if (!shard_ok[t]) return 1;
-    const MatchResult& r = shard_results[t];
-    for (int a = 0; a < k; ++a) agg.net_by_seat[a] += r.net_by_seat[a];
-    sum += r.sample_sum;
-    sumsq += r.sample_sumsq;
-    n += r.sample_n;
-    agg.hands_played += r.hands_played;
-    if (!r.chips_conserved) agg.chips_conserved = false;
-    agg.adjusted_hands += r.adjusted_hands;
-    if (r.aivat_applied) agg.aivat_applied = true;
-  }
-  if (n > 0) {
-    const double mean = sum / static_cast<double>(n);
-    agg.mbb_per_100 = mean * 100.0;
-    if (n > 1) {
-      const double var = (sumsq - static_cast<double>(n) * mean * mean) / static_cast<double>(n - 1);
-      const double se = std::sqrt(var / static_cast<double>(n));
-      agg.ci95 = 1.96 * se * 100.0;
-    }
-  }
+  bool ok = false;
+  MatchResult agg = PooledMatch(kinds, base, hands, threads, seed, cfr_model, &ok);
+  if (!ok) return 1;
 
   std::int64_t net_total = 0;
   for (int a = 0; a < k; ++a) net_total += agg.net_by_seat[a];
