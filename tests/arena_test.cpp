@@ -12,6 +12,7 @@
 #include "poker_engine/arena/random_agent.h"
 #include "poker_engine/game/action_validator.h"
 #include "poker_engine/game/game_state.h"
+#include "poker_engine/game/observation.h"
 #include "poker_engine/network/ai_engine.h"
 
 namespace {
@@ -583,6 +584,71 @@ TEST(ArenaTest, LbrBettingTightensVsCallStation) {
   EXPECT_TRUE(no_bet.chips_conserved);
   EXPECT_TRUE(with_bet.chips_conserved);
   EXPECT_GT(with_bet.mbb_per_100, no_bet.mbb_per_100);
+}
+
+// v1.0: re-raising when facing a bet tightens the bound further. A MinBettor
+// bets a sized (non-all-in) amount whenever it can and never folds, so facing
+// its bets LBR has room to re-raise and (since fp==0) a clear value reason to
+// shove strong hands. A facing-bet-fold/call-only LBR (cfg.raise == false, v0.9)
+// can only call down, whereas the re-raising LBR (cfg.raise == true) extracts
+// extra value by raising. Over the same deals the re-raising variant wins at a
+// higher rate; both conserve chips. Betting stays enabled in both so only the
+// facing-bet raise differs. (MinBettor is O(1) per decision, so probing stays
+// cheap and the test runs fast.)
+namespace {
+// Deterministic sparring partner: bets/raises the MINIMUM legal (non-all-in)
+// size when it can, else calls, else checks, else folds. Never folds
+// voluntarily and never shoves — giving a facing LBR both raise room and reason.
+class MinBettorAgent : public IAIEngine {
+ public:
+  void Initialize(const AIConfig&) override {}
+  poker_engine::network::DecisionResponse Decide(
+      const poker_engine::network::DecisionRequest& request) override {
+    poker_engine::network::DecisionResponse response;
+    const std::vector<GameAction>& legal = request.legal_actions;
+    const GameAction* chosen = nullptr;
+    for (const auto& a : legal)
+      if (a.type == ActionType::BET || a.type == ActionType::RAISE) { chosen = &a; break; }
+    if (!chosen)
+      for (const auto& a : legal)
+        if (a.type == ActionType::CALL) { chosen = &a; break; }
+    if (!chosen)
+      for (const auto& a : legal)
+        if (a.type == ActionType::CHECK) { chosen = &a; break; }
+    GameAction action;
+    if (chosen) {
+      action = *chosen;  // min BET/RAISE amount as-is (no shove)
+    } else {
+      action.type = ActionType::FOLD;
+    }
+    action.player_id = request.player_id;
+    response.action = action;
+    return response;
+  }
+  void OnHandComplete(const GameState&) override {}
+  bool ReloadModel(const std::string&) override { return false; }
+  std::string Name() const override { return "MinBettor"; }
+  poker_engine::network::AIDifficulty Difficulty() const override {
+    return poker_engine::network::AIDifficulty::EASY;
+  }
+};
+}  // namespace
+
+TEST(ArenaTest, LbrRaisingTightensVsMinBettor) {
+  auto run = [](bool raise) {
+    MinBettorAgent live;
+    MinBettorAgent probe;
+    LbrConfig cfg = LbrBench(150, 1);
+    cfg.bet = true;
+    cfg.raise = raise;
+    return RunLbr(live, probe, cfg);
+  };
+  LbrResult no_raise = run(false);
+  LbrResult with_raise = run(true);
+
+  EXPECT_TRUE(no_raise.chips_conserved);
+  EXPECT_TRUE(with_raise.chips_conserved);
+  EXPECT_GT(with_raise.mbb_per_100, no_raise.mbb_per_100);
 }
 
 }  // namespace
