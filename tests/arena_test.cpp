@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "poker_engine/arena/baseline_agents.h"
+#include "poker_engine/arena/lbr.h"
 #include "poker_engine/arena/match_runner.h"
 #include "poker_engine/arena/random_agent.h"
 #include "poker_engine/game/action_validator.h"
@@ -16,11 +17,14 @@
 namespace {
 
 using poker_engine::arena::CallStationAgent;
+using poker_engine::arena::LbrConfig;
+using poker_engine::arena::LbrResult;
 using poker_engine::arena::ManiacAgent;
 using poker_engine::arena::MatchConfig;
 using poker_engine::arena::MatchResult;
 using poker_engine::arena::RandomAgent;
 using poker_engine::arena::RunHeadsUp;
+using poker_engine::arena::RunLbr;
 using poker_engine::arena::RunMatch;
 using poker_engine::game::ActionType;
 using poker_engine::game::ActionValidator;
@@ -503,6 +507,47 @@ TEST(ArenaTest, RoundRobinIsDeterministic) {
   EXPECT_EQ(r1.hands_played, r2.hands_played);
   EXPECT_DOUBLE_EQ(r1.mbb_per_100, r2.mbb_per_100);
   EXPECT_DOUBLE_EQ(r1.ci95, r2.ci95);
+}
+
+LbrConfig LbrBench(int hands, uint64_t seed) {
+  LbrConfig cfg;
+  cfg.hands = hands;
+  cfg.seed = seed;
+  cfg.table = SmallTable();
+  return cfg;
+}
+
+// A fold/call-only LBR provably exploits an over-aggressive Maniac: by calling
+// with the right hands and folding trash at the correct pot odds, it wins at a
+// rate whose 95% CI lower bound is strictly positive. This is a real lower
+// bound on the Maniac's full-game exploitability. (A passive CallStation is NOT
+// exploitable by a non-betting LBR — punishing over-calling requires betting.)
+TEST(ArenaTest, LbrExploitsManiac) {
+  ManiacAgent live{AIConfig{}};
+  ManiacAgent probe{AIConfig{}};
+  LbrResult r = RunLbr(live, probe, LbrBench(1500, 1));
+
+  EXPECT_TRUE(r.chips_conserved);
+  EXPECT_EQ(r.hands_played, 1500);
+  ASSERT_GT(r.sample_n, 0);
+  EXPECT_GT(r.mbb_per_100 - r.ci95, 0.0);  // statistically significant exploit
+}
+
+// RunLbr is fully deterministic for a fixed seed (equity is exact or fixed-seed
+// MC; belief updates are deterministic given the probe agent).
+TEST(ArenaTest, LbrIsDeterministic) {
+  auto run = []() {
+    ManiacAgent live{AIConfig{}};
+    ManiacAgent probe{AIConfig{}};
+    return RunLbr(live, probe, LbrBench(200, 4242));
+  };
+  LbrResult r1 = run();
+  LbrResult r2 = run();
+  EXPECT_EQ(r1.sample_n, r2.sample_n);
+  EXPECT_EQ(r1.hands_played, r2.hands_played);
+  EXPECT_DOUBLE_EQ(r1.mbb_per_100, r2.mbb_per_100);
+  EXPECT_DOUBLE_EQ(r1.ci95, r2.ci95);
+  EXPECT_DOUBLE_EQ(r1.sample_sum, r2.sample_sum);
 }
 
 }  // namespace
