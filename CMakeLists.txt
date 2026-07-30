@@ -9,6 +9,9 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 # -march=native ties binaries to the build machine; keep it opt-in so the
 # project builds portable Release artifacts by default.
 option(POKER_NATIVE_TUNE "Tune -march=native for the build host (non-portable)" OFF)
+# Optional examples (e.g. the real LLM agent) pull in an HTTPS/runtime dependency,
+# so keep them opt-in to preserve a lean, dependency-free core build.
+option(BUILD_EXAMPLES "Build optional examples in examples/ (LLM agent, etc.)" OFF)
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     if(POKER_NATIVE_TUNE)
         add_compile_options(-O3 -march=native -DNDEBUG)
@@ -96,4 +99,7 @@ add_subdirectory(phase21)
 add_subdirectory(arena)
 add_subdirectory(infra/net)
 add_subdirectory(cli)
+if(BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
 add_subdirectory(tests)
