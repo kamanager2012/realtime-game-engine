@@ -46,6 +46,7 @@ void PrintUsage() {
       "  --bb CENTS         big blind in cents (default 100 = $1)\n"
       "  --stack CENTS      starting stack per hand (default 200 big blinds)\n"
       "  --duplicate        variance reduction via seat rotation (duplicate poker)\n"
+      "  --aivat            all-in EV adjustment (unbiased runout control variate; heads-up)\n"
       "  --threads T        parallel shards for throughput (default 1)\n"
       "  --cfr-model PATH   CFR policy weights (required for cfr agent)\n");
 }
@@ -162,6 +163,7 @@ int main(int argc, char** argv) {
   int64_t stack = 0;  // 0 => 200bb
   bool exploitability = false;
   bool duplicate = false;
+  bool aivat = false;
   int threads = 1;
 
   for (int i = 1; i < argc; ++i) {
@@ -181,6 +183,7 @@ int main(int argc, char** argv) {
     else if (arg == "--bb") bb = std::atoll(next("--bb"));
     else if (arg == "--stack") stack = std::atoll(next("--stack"));
     else if (arg == "--duplicate") duplicate = true;
+    else if (arg == "--aivat") aivat = true;
     else if (arg == "--threads") threads = std::atoi(next("--threads"));
     else if (arg == "--cfr-model") cfr_model = next("--cfr-model");
     else if (arg == "--exploitability") exploitability = true;
@@ -216,6 +219,7 @@ int main(int argc, char** argv) {
   base.table.ante = 0;
   base.starting_stack = stack;
   base.duplicate = duplicate;
+  base.aivat = aivat;
 
   std::printf("agents: ");
   for (size_t i = 0; i < kinds.size(); ++i)
@@ -265,6 +269,8 @@ int main(int argc, char** argv) {
     n += r.sample_n;
     agg.hands_played += r.hands_played;
     if (!r.chips_conserved) agg.chips_conserved = false;
+    agg.adjusted_hands += r.adjusted_hands;
+    if (r.aivat_applied) agg.aivat_applied = true;
   }
   if (n > 0) {
     const double mean = sum / static_cast<double>(n);
@@ -290,6 +296,9 @@ int main(int argc, char** argv) {
   std::printf("%-22s %15d\n", "hands played", agg.hands_played);
   std::printf("%-22s %15d\n", "rotations (reps)", agg.reps);
   std::printf("%-22s %15s\n", "variance reduced", agg.variance_reduced ? "yes" : "no");
+  std::printf("%-22s %15s\n", "aivat (all-in EV)", agg.aivat_applied ? "yes" : "no");
+  std::printf("%-22s %15lld\n", "adjusted hands",
+              static_cast<long long>(agg.adjusted_hands));
   std::printf("%-22s %15s\n", "chips conserved",
               agg.chips_conserved && (net_total == 0) ? "yes" : "NO");
 
