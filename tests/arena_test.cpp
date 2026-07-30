@@ -244,4 +244,90 @@ TEST(ArenaTest, DuplicateIsDeterministic) {
   EXPECT_DOUBLE_EQ(r1.mbb_per_100, r2.mbb_per_100);
 }
 
+// All-in EV adjustment (AIVAT-lite): replacing the stochastic all-in pot award
+// with its exact equity expectation is an unbiased control variate that must
+// shrink the CI versus the raw estimator on the same deals, while conserving.
+TEST(ArenaTest, AivatReducesVariance) {
+  auto make_rule = []() {
+    AIConfig c;
+    c.strategy = AIStrategyType::RuleBased;
+    c.random_seed = 11;
+    return CreateAIEngine(c);
+  };
+  AIConfig rand_cfg;
+  rand_cfg.random_seed = 22;
+
+  auto rule_raw = make_rule();
+  RandomAgent rand_raw{rand_cfg};
+  MatchResult raw = RunHeadsUp(*rule_raw, rand_raw, BenchConfig(3000, 2024));
+
+  auto rule_av = make_rule();
+  RandomAgent rand_av{rand_cfg};
+  MatchConfig av = BenchConfig(3000, 2024);
+  av.aivat = true;
+  MatchResult r = RunHeadsUp(*rule_av, rand_av, av);
+
+  EXPECT_TRUE(raw.chips_conserved);
+  EXPECT_TRUE(r.chips_conserved);
+  EXPECT_TRUE(r.aivat_applied);
+  EXPECT_FALSE(raw.aivat_applied);
+  EXPECT_GT(r.adjusted_hands, 0);
+  EXPECT_GT(raw.ci95, 0.0);
+  EXPECT_LT(r.ci95, raw.ci95) << "aivat ci=" << r.ci95 << " raw ci=" << raw.ci95;
+  // net_by_seat still records REALIZED chips, so the adjustment cannot break
+  // conservation nor change the actual chip ledger.
+  EXPECT_EQ(r.net_by_seat[0] + r.net_by_seat[1], 0);
+  EXPECT_EQ(r.net_by_seat, raw.net_by_seat);
+}
+
+// Unbiasedness: the AIVAT and raw estimators are two correlated estimates of the
+// same win rate on the same deals, so they must agree within the combined 95%
+// band (loose bound to avoid flakiness).
+TEST(ArenaTest, AivatIsUnbiasedWithinCI) {
+  auto make_rule = []() {
+    AIConfig c;
+    c.strategy = AIStrategyType::RuleBased;
+    c.random_seed = 11;
+    return CreateAIEngine(c);
+  };
+  AIConfig rand_cfg;
+  rand_cfg.random_seed = 22;
+
+  auto rule_raw = make_rule();
+  RandomAgent rand_raw{rand_cfg};
+  MatchResult raw = RunHeadsUp(*rule_raw, rand_raw, BenchConfig(3000, 2024));
+
+  auto rule_av = make_rule();
+  RandomAgent rand_av{rand_cfg};
+  MatchConfig av = BenchConfig(3000, 2024);
+  av.aivat = true;
+  MatchResult r = RunHeadsUp(*rule_av, rand_av, av);
+
+  EXPECT_LT(std::abs(r.mbb_per_100 - raw.mbb_per_100), raw.ci95 + r.ci95)
+      << "aivat mbb=" << r.mbb_per_100 << " raw mbb=" << raw.mbb_per_100;
+}
+
+// AIVAT uses exact enumeration (flop/turn) or fixed-seed MC (preflop), so a
+// fixed match seed must reproduce every reported figure exactly.
+TEST(ArenaTest, AivatIsDeterministic) {
+  auto run = []() {
+    AIConfig ca;
+    ca.strategy = AIStrategyType::RuleBased;
+    ca.random_seed = 11;
+    auto a = CreateAIEngine(ca);
+    AIConfig cb;
+    cb.random_seed = 22;
+    RandomAgent b{cb};
+    MatchConfig cfg = BenchConfig(800, 2024);
+    cfg.aivat = true;
+    return RunHeadsUp(*a, b, cfg);
+  };
+  MatchResult r1 = run();
+  MatchResult r2 = run();
+  EXPECT_EQ(r1.net_by_seat, r2.net_by_seat);
+  EXPECT_EQ(r1.adjusted_hands, r2.adjusted_hands);
+  EXPECT_DOUBLE_EQ(r1.mbb_per_100, r2.mbb_per_100);
+  EXPECT_DOUBLE_EQ(r1.ci95, r2.ci95);
+}
+
 }  // namespace
