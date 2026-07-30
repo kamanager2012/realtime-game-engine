@@ -29,7 +29,7 @@
 agent contract, a 3-step guide, and reproducible evaluation. The one-liner:
 
 ```bash
-# rule-based clearly beats random; variance reduced by duplicate + all-in EV
+# rule-based clearly beats random; variance reduced by duplicate + runout EV
 ./build/cli/agent_bench --a rule --b random --hands 4000 --seed 1 --duplicate --aivat
 ```
 
@@ -43,7 +43,7 @@ agent contract, a 3-step guide, and reproducible evaluation. The one-liner:
 | A standard agent interface | `network::IAIEngine` (`Decide(DecisionRequest) → DecisionResponse`) |
 | Multi-agent play | `arena::RunMatch(std::vector<IAIEngine*>, cfg)` — 2..N seats |
 | Reproducible evaluation | `agent_bench`: mbb/100 + 95% CI, chip conservation asserted every hand |
-| Variance reduction | duplicate seat rotation (`--duplicate`) + all-in EV adjustment (`--aivat`) |
+| Variance reduction | duplicate seat rotation (`--duplicate`) + per-street runout EV adjustment (`--aivat`) |
 | A solver reference point | CFR baseline + abstraction-level exploitability |
 
 This is not a poker demo, and it is not a general-purpose engine for every game.
@@ -214,7 +214,7 @@ with a 95% confidence interval, asserting chip conservation every hand:
 # duplicate (seat-rotated) dealing cancels card luck → much tighter CI
 ./build/cli/agent_bench --a rule --b random --hands 4000 --seed 1 --duplicate
 
-# all-in EV adjustment: score all-in runouts by exact equity → tighter CI (heads-up)
+# runout EV adjustment: per-street chance control variate on forced runouts → tighter CI (heads-up)
 ./build/cli/agent_bench --a rule --b random --hands 4000 --seed 1 --aivat
 
 # N-way (>2) match, parallelized across threads for throughput

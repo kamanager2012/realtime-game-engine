@@ -74,7 +74,7 @@ confidence interval:
 # Tighter CI for the same budget via duplicate (seat-rotation) pairing
 ./build/cli/agent_bench --a rule --b random --hands 20000 --seed 1 --duplicate
 
-# Tighter CI via all-in EV adjustment (heads-up runout control variate)
+# Tighter CI via per-street runout EV adjustment (heads-up chance control variate)
 ./build/cli/agent_bench --a rule --b random --hands 20000 --seed 1 --aivat
 
 # Multi-way (N-way) table
@@ -111,18 +111,29 @@ sharply for the same number of *distinct* deals. This is honest duplicate
 pairing (it cancels the luck of *who was dealt what*); it is not full AIVAT (it
 does not also subtract a learned control variate on the community runout).
 
-### All-in EV adjustment (runout control variate)
+### Runout EV adjustment (per-street chance control variate)
 
 `--aivat` attacks the *other* big variance source in poker: the community
-**runout after both players are all-in**. When a heads-up hand goes all-in, the
-cards left to come are pure chance — a single cooler can swing a hand by a whole
-stack. Instead of scoring such a hand by the cards that happened to fall, the
-arena scores it by its **exact expected value**: with matched investment
-`m = min(inv0, inv1)` and agent 0's exact equity `e0` on the pre-runout board,
-the mbb sample becomes `m · (2·e0 − 1)`. Because `E[realized net] = m·(2e0 − 1)`,
-this is an **unbiased** control variate — it changes only the variance of the
-estimator, not its expectation. Equity is computed by exact enumeration on the
-flop/turn and fixed-seed Monte Carlo preflop, so the result stays deterministic.
+**runout once the matched money is committed**. In a heads-up hand, as soon as
+one player is all-in and the other has called (with or without chips behind),
+the matched pot `m = min(inv0, inv1)` is forced to showdown and every remaining
+board card is pure chance — a single cooler can swing a hand by a whole stack.
+Instead of scoring such a hand by the cards that happened to fall, the arena
+subtracts a **chance control variate** at every forced deal: on each community
+card dealt while the pot is a forced runout, it adds
+`m · 2 · (e0(after) − e0(before))` to a per-hand correction and scores the hand
+by `realized_net − Σ correction`. Here `e0` is agent 0's exact equity computed
+from **both players' real hole cards** (readable in the trusted runner). Because
+equity is a **martingale under a fair deal** — `E_next-card[e0(board′)] =
+e0(board)` — each increment is conditionally zero-mean, so the estimator is
+**unbiased for any agent** (no strategy knowledge needed) and only its variance
+changes.
+
+This generalizes the earlier all-in-only version: it also covers the
+**one-player-all-in, caller-behind** case (dealt street by street), and it
+telescopes exactly to the preflop double-all-in `m · (2·e0 − 1)`. Equity is
+computed by exact enumeration on the flop/turn/river and fixed-seed Monte Carlo
+preflop, so the result stays deterministic.
 
 `net_by_seat` (and the `Σ net == 0` conservation check) always records the
 **realized** chips; only the mbb/100 *sample* is EV-adjusted. `--aivat` composes
@@ -168,10 +179,11 @@ opponent.
   the hand is over. (The trusted server and CFR *training* self-play still work
   directly on `GameState`; only the agent-facing `Decide` seam is redacted.)
 - **Partial variance reduction, not full AIVAT.** `--duplicate` cancels the luck
-  of *which seat was dealt which cards*, and `--aivat` replaces the all-in runout
-  with its exact-EV control variate (unbiased, heads-up NLHE only). Neither yet
-  subtracts an imaginary-observations term or a control variate on the *non-all-in*
-  street-by-street public cards; full AIVAT-style variance reduction is future
-  work.
+  of *which seat was dealt which cards*, and `--aivat` subtracts a per-street
+  chance control variate on every forced runout (unbiased, heads-up NLHE only),
+  covering all-in-with-caller-behind cases. It does **not** yet subtract an
+  action / imaginary-observations term (that needs the agent's known strategy),
+  and pots decided purely by betting/folding (no all-in) get no control variate;
+  full AIVAT-style variance reduction is future work.
 - Odd hand counts leave a one-hand positional imbalance — negligible at the hand
   counts used for benchmarking.

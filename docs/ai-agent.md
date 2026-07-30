@@ -21,7 +21,7 @@ honest statistical boundaries, see **[ai-research.md](ai-research.md)**.
 | A standard agent interface | `network::IAIEngine` (`Decide(DecisionRequest) → DecisionResponse`) |
 | Multi-agent play | `arena::RunMatch(std::vector<IAIEngine*>, cfg)` — 2..N seats on the real engine |
 | Reproducible evaluation | `agent_bench`: mbb/100 + 95% CI, chip-conservation asserted every hand |
-| Variance reduction | duplicate (seat-rotation) pairing + all-in EV adjustment (`--duplicate`, `--aivat`) |
+| Variance reduction | duplicate (seat-rotation) pairing + per-street runout EV adjustment (`--duplicate`, `--aivat`) |
 | A solver reference point | CFR policy baseline + abstraction-level exploitability |
 
 ## The agent contract
@@ -85,7 +85,7 @@ Two references live in-tree:
 # rule-based vs random → clear, significant edge (lower CI bound > 0)
 ./build/cli/agent_bench --a rule --b random --hands 20000 --seed 1
 
-# variance reduction: seat-rotation duplicate + all-in EV adjustment
+# variance reduction: seat-rotation duplicate + per-street runout EV adjustment
 ./build/cli/agent_bench --a rule --b random --hands 4000 --seed 1 --duplicate --aivat
 
 # N-way table, parallelized for throughput
@@ -103,8 +103,10 @@ Two references live in-tree:
   through `Decide`. The match runner itself is a trusted component and works on
   the full `GameState`.
 - **Partial variance reduction.** `--duplicate` cancels deal luck; `--aivat` adds
-  an unbiased control variate on the heads-up all-in runout. This is **not** full
-  AIVAT (no imaginary-observations term, no per-street non-all-in variate).
+  an unbiased per-street chance control variate on every heads-up forced runout
+  (any-street all-in, incl. caller-behind). This is **not** full AIVAT (no
+  action / imaginary-observations term; pots decided purely by betting get no
+  variate).
 - **Exploitability is abstraction-level.** The CFR exploitability figure is
   measured inside the training abstraction, not the full NLHE game.
 
