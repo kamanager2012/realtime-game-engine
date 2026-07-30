@@ -165,6 +165,36 @@ What you will observe:
 > the reference implementation — needs none of them and works out of the box.
 > To enable Omaha, run `scripts/gen_omaha_tables.sh` and reconfigure.
 
+## AI / Agent Research
+
+The engine doubles as a **reproducible research environment for
+imperfect-information, multi-agent decision making**. Agents implement a single
+interface (`IAIEngine::Decide`) and are evaluated on the real game — exact
+side-pot settlement, provably-fair dealing, integer chip accounting — not a toy
+abstraction.
+
+`agent_bench` runs headless bot-vs-bot matches and reports a win rate (mbb/100)
+with a 95% confidence interval, asserting chip conservation every hand:
+
+```bash
+# random vs random → no edge (CI crosses zero)
+./build/cli/agent_bench --a random --b random --hands 20000 --seed 1
+
+# rule-based vs random → clear, significant edge (lower CI bound > 0)
+./build/cli/agent_bench --a rule --b random --hands 20000 --seed 1
+
+# duplicate (seat-rotated) dealing cancels card luck → much tighter CI
+./build/cli/agent_bench --a rule --b random --hands 4000 --seed 1 --duplicate
+
+# N-way (>2) match, parallelized across threads for throughput
+./build/cli/agent_bench --agents random,rule,cfr --hands 20000 --threads 8 \
+    --cfr-model data/bot_policy.cfr
+```
+
+Baselines: `RandomAgent` (honest floor), rule-based, and a CFR solver policy.
+See **[docs/ai-research.md](docs/ai-research.md)** for the agent API, how to add
+your own agent, metric definitions, and honest limitations.
+
 ## Building
 
 ### Requirements
@@ -193,6 +223,7 @@ cmake -B build -DOFFLINE_BUILD=ON                        # offline
 | [docs/replay-format.md](docs/replay-format.md) | Event-sourcing / replay contract |
 | [docs/ledger-design.md](docs/ledger-design.md) | Integer chip ledger & `Reconcile()` |
 | [docs/ALGORITHMS.md](docs/ALGORITHMS.md) | Algorithm inventory |
+| [docs/ai-research.md](docs/ai-research.md) | Agent API, bot-vs-bot benchmark & metrics |
 | [docs/adr/](docs/adr/) | Architecture Decision Records |
 
 ## License
