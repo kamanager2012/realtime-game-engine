@@ -1,29 +1,56 @@
-# PokerEngine — A C++20 Real-Time Multiplayer Game Engine
+# PokerEngine — An Imperfect-Information Multi-Agent Environment on a Deterministic Realtime Runtime
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://isocpp.org/)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![Tests](https://img.shields.io/badge/tests-405%2F405-brightgreen)]()
 
-> **A production-oriented C++20 real-time multiplayer game engine**, featuring
-> deterministic state transitions, provably-fair RNG, event sourcing, ledger
-> accounting, and anti-cheat infrastructure. **Poker (Texas Hold'em / Omaha) is
-> the reference implementation** — the engine is game-agnostic at its core.
+> **An imperfect-information, multi-agent environment for building and evaluating
+> decision-making agents** — hidden information, self-interested players, exact
+> reproducible rules. No-Limit Texas Hold'em (and Omaha) is the **reference
+> game**, running on a **deterministic realtime runtime**: exact integer chip
+> accounting, provably-fair dealing, full event replay, and a tamper-evident
+> ledger.
 >
-> **~72,000 lines of C++20** (engine + game, excluding vendored dependencies),
-> plus a TypeScript frontend — a real, auditable, low-level real-time system,
-> not a Python demo.
+> That substrate is what makes it a *trustworthy* environment for agents:
+> matches are reproducible bit-for-bit, chips are conserved every hand, and the
+> agent interface is redacted so bots cannot peek at hidden information. Scripted
+> heuristics, CFR solvers, RL policies, and LLMs all plug into one interface.
+>
+> **~72,000 lines of C++20** (engine + game, excluding vendored dependencies) —
+> a real, auditable, low-level system, not a Python demo.
 
 > **Not a real-money / gambling platform.** This project provides infrastructure
 > for real-time multiplayer games. It does not provide gambling services or
 > payment processing. Run it as a free-to-play or skill-based environment under
 > the regulations that apply to you.
 
-This is not a poker demo. It is a reusable runtime for stateful, real-time,
-money-relevant multiplayer games: a deterministic game state machine, a
-tamper-evident chip ledger, a verifiable shuffle, full event replay, and
-real-time anti-cheat — composed so that any turn-based game can be hosted on
-the same infrastructure.
+**Building an agent?** Start with **[docs/ai-agent.md](docs/ai-agent.md)** — the
+agent contract, a 3-step guide, and reproducible evaluation. The one-liner:
+
+```bash
+# rule-based clearly beats random; variance reduced by duplicate + all-in EV
+./build/cli/agent_bench --a rule --b random --hands 4000 --seed 1 --duplicate --aivat
+```
+
+## What an agent needs ↔ what this provides
+
+| What a decision agent needs | What this project provides |
+|---|---|
+| An environment to act in | `GameState` — the real engine (exact side-pot settlement, integer chips, fair dealing) |
+| A legal action space | `GameState::LegalActions(id)` — every entry passes `ActionValidator` |
+| Imperfect information | `GameState::ObserveFor(id)` — a **redacted** `Observation` (your cards + public state only) |
+| A standard agent interface | `network::IAIEngine` (`Decide(DecisionRequest) → DecisionResponse`) |
+| Multi-agent play | `arena::RunMatch(std::vector<IAIEngine*>, cfg)` — 2..N seats |
+| Reproducible evaluation | `agent_bench`: mbb/100 + 95% CI, chip conservation asserted every hand |
+| Variance reduction | duplicate seat rotation (`--duplicate`) + all-in EV adjustment (`--aivat`) |
+| A solver reference point | CFR baseline + abstraction-level exploitability |
+
+This is not a poker demo, and it is not a general-purpose engine for every game.
+It is a deterministic, money-relevant realtime runtime — a deterministic state
+machine, a tamper-evident chip ledger, a verifiable shuffle, full event replay,
+and real-time anti-cheat — with poker as the reference game it was built and
+hardened against.
 
 ## Why this exists
 
@@ -196,8 +223,12 @@ with a 95% confidence interval, asserting chip conservation every hand:
 ```
 
 Baselines: `RandomAgent` (honest floor), rule-based, and a CFR solver policy.
-See **[docs/ai-research.md](docs/ai-research.md)** for the agent API, how to add
-your own agent, metric definitions, and honest limitations.
+For a get-started guide, see **[docs/ai-agent.md](docs/ai-agent.md)** (agent
+contract + 3-step guide); for metrics and methodology see
+**[docs/ai-research.md](docs/ai-research.md)**. A real, optional **LLM agent**
+example lives in `examples/llm-agent/` (build with `-DBUILD_EXAMPLES=ON`; it
+calls an OpenAI-compatible API when `OPENAI_API_KEY` is set, and falls back to a
+safe passive baseline otherwise).
 
 ## Building
 
@@ -227,6 +258,7 @@ cmake -B build -DOFFLINE_BUILD=ON                        # offline
 | [docs/replay-format.md](docs/replay-format.md) | Event-sourcing / replay contract |
 | [docs/ledger-design.md](docs/ledger-design.md) | Integer chip ledger & `Reconcile()` |
 | [docs/ALGORITHMS.md](docs/ALGORITHMS.md) | Algorithm inventory |
+| [docs/ai-agent.md](docs/ai-agent.md) | Build an agent: contract, 3-step guide, evaluation |
 | [docs/ai-research.md](docs/ai-research.md) | Agent API, bot-vs-bot benchmark & metrics |
 | [docs/adr/](docs/adr/) | Architecture Decision Records |
 
