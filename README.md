@@ -45,7 +45,7 @@ agent contract, a 3-step guide, and reproducible evaluation. The one-liner:
 | Reproducible evaluation | `agent_bench`: mbb/100 + 95% CI, chip conservation asserted every hand |
 | Ready-made opponents | baselines (`random`, `callstation`, `maniac`, `rule`, `cfr`) + a `--roundrobin` leaderboard |
 | Variance reduction | duplicate seat rotation (`--duplicate`) + per-street runout EV adjustment (`--aivat`) |
-| A solver reference point | CFR baseline + abstraction-level exploitability |
+| A solver reference point | CFR baseline + a live LBR exploitability lower bound (`--exploitability`) |
 
 This is not a poker demo, and it is not a general-purpose engine for every game.
 It is a deterministic, money-relevant realtime runtime — a deterministic state
@@ -224,6 +224,9 @@ with a 95% confidence interval, asserting chip conservation every hand:
 
 # round-robin: play every pair and print a mbb/100 leaderboard
 ./build/cli/agent_bench --roundrobin --agents random,callstation,maniac,rule --hands 4000 --seed 1
+
+# live LBR exploitability lower bound for any agent (larger = more exploitable)
+./build/cli/agent_bench --exploitability --a maniac --hands 1500 --seed 1
 ```
 
 Baselines ship in-tree: `random` (honest floor), `callstation` and `maniac` (the

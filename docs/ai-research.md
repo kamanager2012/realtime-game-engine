@@ -176,18 +176,42 @@ stays single-threaded and side-effect free; parallelism lives in the CLI, one
 independent match per thread. Results are deterministic for a fixed `--seed`
 **and** a fixed `--threads` (changing the shard count re-partitions the seeds).
 
-## Exploitability (honest boundary)
+## Exploitability — live Local Best Response (LBR) lower bound
 
 ```bash
-./build/cli/agent_bench --exploitability --cfr-model data/bot_policy.cfr
+# Any black-box agent; larger mbb/100 = more exploitable.
+./build/cli/agent_bench --exploitability --a maniac --hands 1500 --seed 1
+./build/cli/agent_bench --exploitability --a cfr --cfr-model data/bot_policy.cfr --hands 4000 --seed 1
 ```
 
-This reports the exploitability **recorded at training time**, measured **inside
-the CFR abstraction** (169-bucket infosets, abstract bet sizes). It is *not*
-exploitability in the full NLHE game, and it is *not* recomputed live (the
-engine's live best-response is a placeholder). Treat it as an abstraction-level
-convergence figure, not a game-theoretic guarantee against an unrestricted
-opponent.
+`--exploitability` now runs a **live Local Best Response** (Lisý & Bowling, 2017)
+against the chosen agent (`--a`) and reports LBR's realized win rate in mbb/100
+with a 95% CI. This is a **lower bound on the opponent's true full-game
+exploitability**: the real value is `>=` the reported number. LBR obtains the
+opponent's per-hand behaviour by *counterfactual probing* — it asks a separate
+instance of the same agent what it would do with each hypothetical villain
+hole-card combo, then Bayes-filters its belief over the villain's range by
+consistency with the observed action. The key correctness property: **the
+measured win rate is a valid lower bound for any legal LBR policy** — the belief
+model only affects tightness, not validity.
+
+Honest boundaries of this estimate:
+
+- **It is a lower bound, not the exact value or an upper bound.** This LBR
+  variant is restricted to **fold / call-check** (it never bets or raises), the
+  simplest valid form, so it *underestimates* exploitability. A responder that
+  bets would prove a tighter (larger) bound.
+- Because it never bets, LBR **cannot punish a passive CallStation** (exploiting
+  over-calling requires value betting) — expect ~0 there. It **does** crush an
+  over-aggressive Maniac by calling correctly and folding trash at pot odds.
+- It is measured in the **full NLHE game** (not a CFR abstraction), and is
+  deterministic for a fixed `--seed` (and `--threads`).
+
+For reference, a trained `.cfr` model still carries a **training-time**
+exploitability figure in its header, measured **inside the CFR abstraction**
+(169-bucket infosets, abstract bet sizes). That is a different, non-live quantity
+(an abstraction-level convergence figure, not a full-game guarantee); the CLI
+prints it as a footnote when evaluating a `cfr` agent.
 
 ## Honest limitations
 

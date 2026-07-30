@@ -23,7 +23,7 @@ honest statistical boundaries, see **[ai-research.md](ai-research.md)**.
 | Reproducible evaluation | `agent_bench`: mbb/100 + 95% CI, chip-conservation asserted every hand |
 | Ready-made opponents | baseline agents (`random`, `callstation`, `maniac`, `rule`, `cfr`) + a round-robin leaderboard |
 | Variance reduction | duplicate (seat-rotation) pairing + per-street runout EV adjustment (`--duplicate`, `--aivat`) |
-| A solver reference point | CFR policy baseline + abstraction-level exploitability |
+| A solver reference point | CFR policy baseline + a live LBR exploitability lower bound (`--exploitability`) |
 
 ## The agent contract
 
@@ -130,6 +130,22 @@ All the variance-reduction and throughput flags (`--duplicate`, `--aivat`,
 `--threads`) apply to every pairing. Results are deterministic for a fixed
 `--seed` **and** a fixed `--threads`.
 
+## Exploitability (LBR lower bound)
+
+`--exploitability` runs a live **Local Best Response** against `--a` and reports
+LBR's mbb/100 ± CI — a **lower bound** on that agent's true full-game
+exploitability (larger = more exploitable). It works on any black-box agent by
+probing what the agent would do with each hypothetical villain hand.
+
+```bash
+./build/cli/agent_bench --exploitability --a maniac --hands 1500 --seed 1
+./build/cli/agent_bench --exploitability --a cfr --cfr-model data/bot_policy.cfr --hands 4000 --seed 1
+```
+
+This LBR is restricted to fold/call (never bets), so it underestimates: it
+crushes an over-aggressive `maniac` but cannot punish a passive `callstation`
+(≈0). See **[ai-research.md](ai-research.md)** for the method and its guarantees.
+
 ## Honest boundaries
 
 - **Redacted observation, trusted runner.** Agents see only their own cards
@@ -140,7 +156,10 @@ All the variance-reduction and throughput flags (`--duplicate`, `--aivat`,
   (any-street all-in, incl. caller-behind). This is **not** full AIVAT (no
   action / imaginary-observations term; pots decided purely by betting get no
   variate).
-- **Exploitability is abstraction-level.** The CFR exploitability figure is
-  measured inside the training abstraction, not the full NLHE game.
+- **Exploitability is a fold/call LBR lower bound.** `--exploitability` reports a
+  live LBR *lower bound* in the full NLHE game (real value `>=` shown; a
+  non-betting LBR loosens it). A trained `.cfr` model separately carries a
+  training-time, abstraction-level figure in its header (a different, non-live
+  quantity), shown as a footnote for `cfr`.
 
 See **[ai-research.md](ai-research.md)** for the full methodology.
