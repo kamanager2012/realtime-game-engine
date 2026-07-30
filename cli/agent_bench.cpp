@@ -46,7 +46,7 @@ void PrintUsage() {
       "  --bb CENTS         big blind in cents (default 100 = $1)\n"
       "  --stack CENTS      starting stack per hand (default 200 big blinds)\n"
       "  --duplicate        variance reduction via seat rotation (duplicate poker)\n"
-      "  --aivat            all-in EV adjustment (unbiased runout control variate; heads-up)\n"
+      "  --aivat            per-street runout EV adjustment (unbiased chance control variate; heads-up)\n"
       "  --threads T        parallel shards for throughput (default 1)\n"
       "  --cfr-model PATH   CFR policy weights (required for cfr agent)\n");
 }
@@ -296,7 +296,7 @@ int main(int argc, char** argv) {
   std::printf("%-22s %15d\n", "hands played", agg.hands_played);
   std::printf("%-22s %15d\n", "rotations (reps)", agg.reps);
   std::printf("%-22s %15s\n", "variance reduced", agg.variance_reduced ? "yes" : "no");
-  std::printf("%-22s %15s\n", "aivat (all-in EV)", agg.aivat_applied ? "yes" : "no");
+  std::printf("%-22s %15s\n", "aivat (runout EV)", agg.aivat_applied ? "yes" : "no");
   std::printf("%-22s %15lld\n", "adjusted hands",
               static_cast<long long>(agg.adjusted_hands));
   std::printf("%-22s %15s\n", "chips conserved",

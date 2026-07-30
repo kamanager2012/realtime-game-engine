@@ -33,18 +33,21 @@ Chips ChipsOf(const GameState& state, int32_t id) {
   return 0;
 }
 
-// Per-hand snapshot captured (via the game's EventCallback) at the moment a
-// heads-up all-in triggers the community runout — BEFORE DoShowdown deals the
-// remaining board and settles the pot. Records the pre-runout board and both
-// all-in players' hole cards and total investment so the runner can replace the
-// stochastic pot award with the exact equity-weighted expectation.
-struct AllInLock {
-  bool locked = false;
-  CommunityCards prev_board;  // last normal-street board = pre-runout board
-  CommunityCards pre_board;    // board frozen at the runout instant
-  int32_t ids[2] = {0, 0};
-  uint8_t c1[2] = {0, 0}, c2[2] = {0, 0};
-  Chips inv[2] = {0, 0};
+// Per-hand accumulator for the per-street runout chance control variate. Driven
+// by the game's EventCallback: on every community deal that occurs while the
+// heads-up pot is a *forced runout* (both players still in and at least one
+// all-in, so the matched money is committed to showdown), we add the martingale
+// increment m*2*(e0(after) - e0(before)) to `cv_chips`. e0 is agent 0's exact
+// equity computed from both players' real hole cards; since equity is a
+// martingale under a fair deal, each increment is conditionally zero-mean, so
+// subtracting cv_chips from the realized net is unbiased for any agent while
+// removing the community-runout variance. This generalizes the old preflop-only
+// all-in EV replacement to every street and also covers the "one player all-in,
+// caller has chips behind" case the previous version missed.
+struct RunoutTracker {
+  CommunityCards prev_board;  // board snapshot before the latest deal
+  double cv_chips = 0.0;      // accumulated control-variate correction (chips)
+  bool any = false;           // true once at least one forced-runout deal seen
 };
 
 // Agent-0 heads-up equity of (c1a,c2a) vs (c1b,c2b) on `board`. Flop/turn (>=3
@@ -203,46 +206,51 @@ MatchResult RunMatch(const std::vector<IAIEngine*>& agents, const MatchConfig& c
     const int seat_of_a0 = (k - (r % k)) % k;
     const int32_t id_of_a0 = seat_of_a0 + 1;
 
-    // AIVAT: intercept the all-in community runout the instant it is dealt (the
-    // engine runs the board out and settles synchronously inside ProcessAction,
-    // so the runner loop cannot see the pre-runout board afterward).
-    AllInLock lock;
+    // AIVAT: accumulate the per-street runout control variate as each community
+    // card is dealt. The engine deals the board and settles synchronously inside
+    // ProcessAction, so we must observe every COMMUNITY_DEALT event live rather
+    // than reconstructing the runout afterward.
+    RunoutTracker tracker;
     if (aivat_on) {
-      state.SetCallback([&state, &lock](const GameEvent& ev) {
+      state.SetCallback([&state, &tracker, id_of_a0](const GameEvent& ev) {
         if (ev.type != GameEvent::COMMUNITY_DEALT) return;
-        int active_not_allin = 0, not_folded = 0;
+        // Collect the (up to two) players still in the hand and count all-ins.
+        int not_folded = 0, all_in = 0, s = 0;
+        int32_t ids[2] = {0, 0};
+        uint8_t c1[2] = {0, 0}, c2[2] = {0, 0};
+        Chips inv[2] = {0, 0};
         for (const auto& p : state.AllPlayers()) {
-          if (p.IsActive()) {
-            ++active_not_allin;
-            ++not_folded;
-          } else if (p.IsAllIn()) {
-            ++not_folded;
+          if (!p.IsActive() && !p.IsAllIn()) continue;  // folded / not in hand
+          ++not_folded;
+          if (p.IsAllIn()) ++all_in;
+          if (s < 2) {
+            ids[s] = p.id;
+            c1[s] = p.hole_cards.card1();
+            c2[s] = p.hole_cards.card2();
+            inv[s] = p.bet_info.total_invested;
+            ++s;
           }
         }
-        if (active_not_allin == 0 && not_folded == 2) {
-          // Heads-up all-in runout: freeze the pre-runout board + both hands.
-          lock.locked = true;
-          lock.pre_board = lock.prev_board;
-          int s = 0;
-          for (const auto& p : state.AllPlayers()) {
-            if (!p.IsActive() && !p.IsAllIn()) continue;
-            if (s < 2) {
-              lock.ids[s] = p.id;
-              lock.c1[s] = p.hole_cards.card1();
-              lock.c2[s] = p.hole_cards.card2();
-              lock.inv[s] = p.bet_info.total_invested;
-              ++s;
-            }
-          }
-        } else {
-          // Normal street deal: remember this board as the pre-runout snapshot.
-          lock.prev_board = state.GetCommunity();
+        const CommunityCards board_after = state.GetCommunity();
+        // Forced runout: heads-up, both players in, at least one all-in => the
+        // matched money is committed to showdown and this deal is pure chance.
+        if (not_folded == 2 && all_in >= 1) {
+          const int a0slot = (ids[0] == id_of_a0) ? 0 : 1;
+          const int vslot = 1 - a0slot;
+          const Chips m = std::min(inv[a0slot], inv[vslot]);
+          const double e_before = HeadsUpEquity(c1[a0slot], c2[a0slot], c1[vslot], c2[vslot],
+                                                tracker.prev_board);
+          const double e_after = HeadsUpEquity(c1[a0slot], c2[a0slot], c1[vslot], c2[vslot],
+                                               board_after);
+          tracker.cv_chips += static_cast<double>(m) * 2.0 * (e_after - e_before);
+          tracker.any = true;
         }
+        tracker.prev_board = board_after;  // baseline for the next deal
       });
     }
 
     for (int h = 0; h < H; ++h) {
-      if (aivat_on) lock = AllInLock{};
+      if (aivat_on) tracker = RunoutTracker{};
       if (!PlayOneHand(state, k, agent_for)) break;
 
       for (auto* ag : agents) ag->OnHandComplete(state);
@@ -260,14 +268,10 @@ MatchResult RunMatch(const std::vector<IAIEngine*>& agents, const MatchConfig& c
       if (hand_sum != 0) result.chips_conserved = false;
 
       double x;
-      if (aivat_on && lock.locked && lock.pre_board.count < 5) {
-        const int a0slot = (lock.ids[0] == id_of_a0) ? 0 : 1;
-        const int vslot = 1 - a0slot;
-        const Chips m = std::min(lock.inv[a0slot], lock.inv[vslot]);
-        const double e0 = HeadsUpEquity(lock.c1[a0slot], lock.c2[a0slot], lock.c1[vslot],
-                                        lock.c2[vslot], lock.pre_board);
-        const double ev_net_a0 = static_cast<double>(m) * (2.0 * e0 - 1.0);
-        x = ev_net_a0 / static_cast<double>(bb) * 1000.0;  // mbb (EV-adjusted)
+      if (aivat_on && tracker.any) {
+        // Subtract the zero-mean chance control variate from the realized net.
+        const double adj_net_a0 = static_cast<double>(a0_net) - tracker.cv_chips;
+        x = adj_net_a0 / static_cast<double>(bb) * 1000.0;  // mbb (CV-adjusted)
         ++result.adjusted_hands;
       } else {
         x = static_cast<double>(a0_net) / static_cast<double>(bb) * 1000.0;  // mbb

@@ -21,11 +21,16 @@ struct MatchConfig {
   // occupies which seat, so every agent plays every seat on identical cards.
   // The deal luck cancels in agent 0's cross-rotation sum, shrinking the CI.
   bool duplicate = false;
-  // All-in EV adjustment (AIVAT-lite): for heads-up all-in showdowns, replace
-  // the stochastic pot award with the exact equity-weighted expectation
-  // m*(2e-1) on the pre-runout board, an unbiased chance control variate that
-  // removes community-runout variance. Only applies when k == 2 (heads-up
-  // NLHE); ignored for N-way. net_by_seat still records realized chips.
+  // Per-street runout EV adjustment (AIVAT-lite chance control variate): for
+  // heads-up hands, on every community deal that occurs while the matched pot is
+  // a forced runout (both players in, at least one all-in), subtract the
+  // martingale increment m*2*(e0(after) - e0(before)) from agent 0's realized
+  // net. e0 is agent 0's exact equity from both real hole cards; each increment
+  // is conditionally zero-mean, so the estimator stays unbiased for any agent
+  // while removing community-runout variance. Covers all-in-with-caller-behind
+  // and telescopes to the preflop double-all-in m*(2e0-1) case. Only applies
+  // when k == 2 (heads-up NLHE); ignored for N-way. net_by_seat still records
+  // realized chips.
   bool aivat = false;
 };
 
@@ -41,9 +46,9 @@ struct MatchResult {
   double big_blind = 0.0;       // in chips (cents), for reporting
   int reps = 1;                 // 1 for independent, = num agents for duplicate
   bool variance_reduced = false;
-  // All-in EV adjustment reporting (see MatchConfig::aivat).
+  // Per-street runout EV adjustment reporting (see MatchConfig::aivat).
   bool aivat_applied = false;      // true when aivat requested and k == 2
-  long long adjusted_hands = 0;    // hands whose mbb sample used the EV value
+  long long adjusted_hands = 0;    // hands with >=1 forced-runout deal adjusted
 
   // Sufficient statistics on agent 0's per-hand-equivalent mbb sample, exposed
   // so callers (e.g. a multi-threaded benchmark) can pool shards and recompute
