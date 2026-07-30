@@ -48,3 +48,10 @@ target_link_libraries(db_tool PRIVATE phase14)
 add_executable(cfr_train_tool cfr_train_tool.cpp)
 target_include_directories(cfr_train_tool PRIVATE ${CMAKE_SOURCE_DIR}/phase12/include)
 target_link_libraries(cfr_train_tool PRIVATE phase15 phase12 core)
+
+add_executable(agent_bench agent_bench.cpp)
+target_include_directories(agent_bench PRIVATE
+    ${CMAKE_SOURCE_DIR}/phase13/include
+    ${CMAKE_SOURCE_DIR}/phase15/include
+    ${CMAKE_SOURCE_DIR}/phase12/include)
+target_link_libraries(agent_bench PRIVATE arena phase13 phase15 phase12 core equity Threads::Threads)
