@@ -7,7 +7,7 @@
 //   agent_bench --a random --b random --hands 200000 --threads 8
 //   agent_bench --cfr --a cfr --b rule --cfr-model data/bot_policy.cfr
 //   agent_bench --roundrobin --agents random,callstation,maniac,rule --hands 4000 --seed 1
-//   agent_bench --exploitability --cfr-model data/bot_policy.cfr
+//   agent_bench --exploitability --a cfr --cfr-model data/bot_policy.cfr --hands 4000 --seed 1
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "poker_engine/arena/baseline_agents.h"
+#include "poker_engine/arena/lbr.h"
 #include "poker_engine/arena/match_runner.h"
 #include "poker_engine/arena/random_agent.h"
 #include "poker_engine/cfr/cfr_model.h"
@@ -45,7 +46,7 @@ void PrintUsage() {
       "Usage: agent_bench --a <kind> --b <kind> [options]\n"
       "       agent_bench --agents <k1,k2,...> [options]\n"
       "       agent_bench --roundrobin --agents <k1,k2,...> [options]\n"
-      "       agent_bench --exploitability --cfr-model <path>\n\n"
+      "       agent_bench --exploitability --a <kind> [--cfr-model <path>]\n\n"
       "  <kind> is one of: random | callstation | maniac | rule | cfr\n\n"
       "Options:\n"
       "  --hands N          number of hands (default 10000)\n"
@@ -55,6 +56,7 @@ void PrintUsage() {
       "  --duplicate        variance reduction via seat rotation (duplicate poker)\n"
       "  --aivat            per-street runout EV adjustment (unbiased chance control variate; heads-up)\n"
       "  --roundrobin       play every pair of --agents and print a mbb/100 leaderboard\n"
+      "  --exploitability   run live Local Best Response vs --a; prints a lower bound (fold/call LBR)\n"
       "  --threads T        parallel shards for throughput (default 1)\n"
       "  --cfr-model PATH   CFR policy weights (required for cfr agent)\n");
 }
@@ -122,25 +124,100 @@ std::vector<std::string> SplitCsv(const std::string& s) {
   return out;
 }
 
-int RunExploitability(const std::string& cfr_model) {
-  if (cfr_model.empty()) {
-    std::fprintf(stderr, "error: --exploitability requires --cfr-model <path>\n");
+// mbb/100 + CI from pooled sufficient statistics (defined below).
+void StatsFromSuff(long long n, double sum, double sumsq, double* mbb, double* ci95);
+
+// Live Local Best Response (LBR) exploitability lower bound. Plays LBR against
+// the black-box opponent `kind` for `hands` hands (sharded across `threads`),
+// pools the per-hand mbb sufficient statistics, and reports LBR's mbb/100 ± CI
+// — a valid LOWER BOUND on the opponent's true full-game exploitability.
+int RunLbrExploitability(const std::string& kind, int hands, uint64_t seed, int threads,
+                         int64_t bb, int64_t stack, const std::string& cfr_model) {
+  if (hands <= 0 || bb <= 0) {
+    std::fprintf(stderr, "error: --hands and --bb must be positive\n");
     return 1;
   }
-  auto info = poker_engine::cfr::CFRModelIO::GetInfo(cfr_model);
-  if (!info) {
-    std::fprintf(stderr, "error: failed to read CFR model header: %s\n", cfr_model.c_str());
-    return 1;
+  if (!EnsureCfrLoaded({kind}, cfr_model)) return 1;
+  if (threads < 1) threads = 1;
+  if (threads > hands) threads = hands;
+
+  poker_engine::arena::LbrConfig base;
+  base.table.small_blind = bb / 2;
+  base.table.big_blind = bb;
+  base.table.ante = 0;
+  base.starting_stack = stack;
+
+  const int base_hands = hands / threads;
+  const int remainder = hands % threads;
+
+  std::vector<poker_engine::arena::LbrResult> shard(threads);
+  std::vector<char> shard_ok(threads, 0);
+  std::vector<std::thread> pool;
+
+  for (int t = 0; t < threads; ++t) {
+    const int shard_hands = base_hands + (t < remainder ? 1 : 0);
+    poker_engine::arena::LbrConfig cfg = base;
+    cfg.hands = shard_hands;
+    cfg.seed = seed + static_cast<uint64_t>(t);
+    pool.emplace_back([&, t, cfg, shard_hands]() {
+      const uint64_t live_seed = cfg.seed * 131u + 1u;
+      const uint64_t probe_seed = cfg.seed * 131u + 977u;
+      auto live = MakeAgent(kind, live_seed, cfr_model);
+      auto probe = MakeAgent(kind, probe_seed, cfr_model);
+      if (!live || !probe || shard_hands <= 0) {
+        shard_ok[t] = (shard_hands <= 0) ? 1 : 0;
+        return;
+      }
+      shard[t] = poker_engine::arena::RunLbr(*live, *probe, cfg);
+      shard_ok[t] = 1;
+    });
   }
-  std::printf("model:            %s\n", cfr_model.c_str());
-  std::printf("format version:   %u\n", info->version);
-  std::printf("infoset nodes:    %llu\n", static_cast<unsigned long long>(info->node_count));
-  std::printf("exploitability:   %.6f\n", info->exploitability);
+  for (auto& th : pool) th.join();
+
+  long long n = 0;
+  double sum = 0.0, sumsq = 0.0;
+  long long hands_played = 0;
+  bool conserved = true;
+  for (int t = 0; t < threads; ++t) {
+    if (!shard_ok[t]) {
+      std::fprintf(stderr, "error: LBR shard %d failed (bad agent kind?)\n", t);
+      return 1;
+    }
+    n += shard[t].sample_n;
+    sum += shard[t].sample_sum;
+    sumsq += shard[t].sample_sumsq;
+    hands_played += shard[t].hands_played;
+    if (!shard[t].chips_conserved) conserved = false;
+  }
+
+  double mbb = 0.0, ci95 = 0.0;
+  StatsFromSuff(n, sum, sumsq, &mbb, &ci95);
+
+  std::printf("Local Best Response (LBR) exploitability lower bound\n");
+  std::printf("%-22s %15s\n", "opponent", kind.c_str());
+  std::printf("%-22s %15llu\n", "seed", static_cast<unsigned long long>(seed));
+  std::printf("%-22s %15lld\n", "big blind (cents)", static_cast<long long>(bb));
+  std::printf("%-22s %15d\n", "threads", threads);
+  std::printf("%-22s %15lld\n", "hands played", hands_played);
+  std::printf("%-22s %15.2f\n", "LBR mbb/100", mbb);
+  std::printf("%-22s %15.2f\n", "95% CI (+/-)", ci95);
+  std::printf("%-22s %15s\n", "chips conserved", conserved ? "yes" : "NO");
   std::printf(
-      "NOTE: this is the value recorded at TRAINING time, measured within the\n"
-      "      CFR abstraction (169-bucket infosets, abstract bet sizes) — NOT\n"
-      "      exploitability in the full NLHE game.\n");
-  return 0;
+      "\nNOTE: LBR is restricted to fold/call (no betting), so this is a LOWER\n"
+      "      BOUND on the opponent's true full-game exploitability: the real value\n"
+      "      is >= this. Larger mbb/100 = more exploitable. It is measured in the\n"
+      "      FULL NLHE game (not a CFR abstraction).\n");
+  if (kind == "cfr" && !cfr_model.empty()) {
+    auto info = poker_engine::cfr::CFRModelIO::GetInfo(cfr_model);
+    if (info) {
+      std::printf(
+          "      (For reference, the .cfr header records a TRAINING-time value of\n"
+          "      %.6f measured WITHIN the CFR abstraction — a different, non-live\n"
+          "      quantity from the LBR lower bound above.)\n",
+          info->exploitability);
+    }
+  }
+  return conserved ? 0 : 2;
 }
 
 // Run one shard: build its own agents (so threads share no mutable state) and
@@ -387,7 +464,8 @@ int main(int argc, char** argv) {
     else { std::fprintf(stderr, "error: unknown option '%s'\n", arg.c_str()); PrintUsage(); return 1; }
   }
 
-  if (exploitability) return RunExploitability(cfr_model);
+  if (exploitability)
+    return RunLbrExploitability(kind_a, hands, seed, threads, bb, stack, cfr_model);
 
   if (hands <= 0 || bb <= 0) {
     std::fprintf(stderr, "error: --hands and --bb must be positive\n");
